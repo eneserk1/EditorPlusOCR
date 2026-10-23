@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, X, Download, FileText, ArrowRight, Loader2, CheckCircle2, RotateCw, Trash2, Save, Plus, ScanText, FilePenLine, MousePointer2, Eraser, Type, ChevronLeft, ZoomIn, ZoomOut, Bold, Palette, Highlighter, Minus, Home, Sparkles, Percent, Hand, MousePointerClick, GitCompare, Stamp, QrCode, Grid, Type as TypeIcon, Copy, FileDiff } from 'lucide-react';
 import { FileWithPreview, CompressedResult, PdfPage, Annotation } from '../types';
-import { drawPageEdits, editingFontName, extractNativeText, ocrAnnotations, overlapsOriginal, prepareBrowserFont, textChanged } from '../services/pdfEditing';
+import { drawPageEdits, editingFontName, extractNativeText, ocrAnnotations, originalMaskBounds, overlapsOriginal, prepareBrowserFont, textareaBaselineOffset, textChanged } from '../services/pdfEditing';
 
 // --- Helper Components ---
 const SectionHeader: React.FC<{ title: string; description: string; onBack: () => void }> = ({ title, description, onBack }) => (
@@ -820,7 +820,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   const editingPage = editingPageId ? pages.find(p => p.uniqueId === editingPageId) : null;
 
   useEffect(() => {
-    const text = editingPage?.annotations.filter(a => a.type === 'text' && !a.isDeleted && textChanged(a)) || [];
+    const text = editingPage?.annotations.filter(a => a.type === 'text' && !a.isDeleted && (textChanged(a) || a.id === selectedAnnotationId)) || [];
     let cancelled = false;
     const unique = [...new Map(text.map(a => [editingFontName(a), a])).values()];
     Promise.all(unique.map(prepareBrowserFont)).then(() => {
@@ -829,7 +829,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
       if (!cancelled) setDetectionStatus('Yazı tipi önizlemesi yüklenemedi; kaydetmek için internet bağlantısı gerekir.');
     });
     return () => { cancelled = true; };
-  }, [editingPage?.annotations]);
+  }, [editingPage?.annotations, selectedAnnotationId]);
 
   // Auto-zoom and center editor view
   useEffect(() => {
@@ -1487,14 +1487,15 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                  ></div>
               )}
 
-              {editingPage.annotations.filter(ann => ann.original && textChanged(ann)).map(ann => (
-                <div key={`mask-${ann.id}`} className="absolute pointer-events-none z-10" style={{
-                  left: `${ann.original!.x}%`, top: `${ann.original!.y}%`,
-                  width: `${ann.original!.width}%`, height: `${ann.original!.height}%`,
+              {editingPage.annotations.filter(ann => ann.original && textChanged(ann)).map(ann => {
+                const mask = originalMaskBounds(ann, editingPage.previewWidth || 1, editingPage.previewHeight || 1);
+                return <div key={`mask-${ann.id}`} className="absolute pointer-events-none z-10" style={{
+                  left: `${mask.x}%`, top: `${mask.y}%`,
+                  width: `${mask.width}%`, height: `${mask.height}%`,
                   backgroundColor: ann.maskColor || '#ffffff',
-                  transform: `rotate(${ann.original!.rotation || 0}deg)`, transformOrigin: 'top left',
-                }} />
-              ))}
+                  transform: `rotate(${mask.rotation || 0}deg)`, transformOrigin: 'top left',
+                }} />;
+              })}
               {editingPage.annotations.filter(ann => !ann.isDeleted).map(ann => {
                 const isSelected = selectedAnnotationId === ann.id;
                 
@@ -1619,7 +1620,9 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                             style={{ 
                               fontSize: ann.fontSize ? `${ann.fontSize}px` : '14px',
                               fontFamily: editingFontName(ann),
+                              fontStyle: ann.fontFamily === 'Courier' && ann.isItalic ? 'italic' : 'normal',
                               color: 'transparent',
+                              position: 'absolute', top: textareaBaselineOffset(ann),
                               caretColor: ann.color || '#000000',
                               padding: 0, margin: 0, border: 0, borderRadius: 0,
                               boxShadow: 'none', boxSizing: 'border-box',

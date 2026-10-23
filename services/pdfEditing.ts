@@ -7,6 +7,19 @@ export const textChanged = (ann: Annotation) => {
     (ann as any)[key] !== (ann.original as any)[key]);
 };
 
+export function originalMaskBounds(ann: Annotation, width: number, height: number) {
+  const box = ann.original!;
+  const padding = ann.maskPadding ?? 1.5;
+  const angle = (box.rotation || 0) * Math.PI / 180;
+  return {
+    ...box,
+    x: box.x - padding * (Math.cos(angle) - Math.sin(angle)) / width * 100,
+    y: box.y - padding * (Math.sin(angle) + Math.cos(angle)) / height * 100,
+    width: box.width + padding * 2 / width * 100,
+    height: box.height + padding * 2 / height * 100,
+  };
+}
+
 const remember = (ann: Annotation): Annotation => ({
   ...ann,
   originalContent: ann.content,
@@ -78,6 +91,7 @@ export async function extractNativeText(page: any, viewport: any, canvas: HTMLCa
       x: x / canvas.width * 100, y: y / canvas.height * 100,
       width: width / canvas.width * 100, height: height / canvas.height * 100,
       fontSize: size, baseline: ascent, rotation: angle * 180 / Math.PI,
+      maskPadding: Math.max(1.5, size * 0.1),
       fontFamily: familyFor(name), detectedFont: name,
       isBold: !!fontInfo?.bold || /bold|black|heavy|demi/i.test(name),
       isItalic: !!fontInfo?.italic || /italic|oblique/i.test(name),
@@ -121,6 +135,20 @@ const browserFonts = new Map<string, Promise<void>>();
 export const editingFontName = (ann: Annotation) =>
   `Editor${ann.fontFamily === 'Courier' ? 'Mono' : ann.fontFamily === 'Times New Roman' ? 'Serif' : 'Sans'}${ann.isBold ? 'Bold' : ''}${ann.isItalic ? 'Italic' : ''}`;
 
+let measuringCanvas: HTMLCanvasElement | undefined;
+export function textareaBaselineOffset(ann: Annotation) {
+  measuringCanvas ||= document.createElement('canvas');
+  const context = measuringCanvas.getContext('2d');
+  const size = ann.fontSize || 24;
+  if (!context) return 0;
+  context.font = `${ann.fontFamily === 'Courier' && ann.isItalic ? 'italic ' : ''}${size}px "${editingFontName(ann)}"`;
+  const metrics = context.measureText('Mg');
+  const ascent = metrics.fontBoundingBoxAscent ?? size * 0.8;
+  const descent = metrics.fontBoundingBoxDescent ?? size * 0.2;
+  const browserBaseline = (size * 1.2 - ascent - descent) / 2 + ascent;
+  return (ann.baseline ?? size * 0.8) - browserBaseline;
+}
+
 function loadFontBytes(ann: Annotation) {
   const family = ann.fontFamily === 'Courier' ? 'NotoSansMono' : ann.fontFamily === 'Times New Roman' ? 'NotoSerif' : 'NotoSans';
   // Noto Mono has no italic file; both the preview and PDF synthesize its slant.
@@ -129,7 +157,10 @@ function loadFontBytes(ann: Annotation) {
   if (!fontBytes.has(url)) fontBytes.set(url, fetch(url, { signal: AbortSignal.timeout(30000) }).then(async response => {
     if (!response.ok) throw new Error('Türkçe yazı tipi indirilemedi. İnternet bağlantınızı kontrol edin.');
     return response.arrayBuffer();
-  }).catch(error => { fontBytes.delete(url); throw error; }));
+  }).catch(error => {
+    fontBytes.delete(url);
+    throw new Error('Türkçe yazı tipi indirilemedi. İnternet bağlantınızı kontrol edin; özgün metin değiştirilmedi.', { cause: error });
+  }));
   return fontBytes.get(url)!;
 }
 
@@ -163,7 +194,9 @@ export async function drawPageEdits(doc: any, page: any, model: PdfPage, fonts: 
   });
   // Cover originals first so moving one word cannot cover another replacement.
   for (const ann of model.annotations) {
-    if (ann.original && textChanged(ann)) rect(ann.original, ann.maskColor || '#ffffff');
+    if (ann.original && textChanged(ann)) {
+      rect(originalMaskBounds(ann, model.previewWidth || width * 2, model.previewHeight || height * 2), ann.maskColor || '#ffffff');
+    }
   }
   for (const ann of model.annotations) {
     if (ann.isDeleted) continue;

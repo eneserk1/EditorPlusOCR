@@ -57,6 +57,7 @@ export interface Annotation {
     backgroundColor?: string; textBackgroundColor?: string; opacity?: number;
   };
   maskColor?: string;
+  maskPadding?: number; // Natural preview pixels, including glyph overhang
   isDeleted?: boolean;
   
   // Image specific (Stamp/QR)

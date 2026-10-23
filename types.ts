@@ -42,6 +42,22 @@ export interface Annotation {
   fontSize?: number;
   fontFamily?: 'Helvetica' | 'Times New Roman' | 'Courier';
   isBold?: boolean;
+  isItalic?: boolean;
+  rotation?: number; // Clockwise degrees in the rendered page
+  baseline?: number; // Baseline offset in natural preview pixels
+  source?: 'native' | 'ocr';
+  confidence?: number;
+  detectedFont?: string;
+  detectedBounds?: { x: number; y: number; width: number; height: number };
+  original?: {
+    x: number; y: number; width: number; height: number;
+    content: string; fontSize?: number; fontFamily?: Annotation['fontFamily'];
+    isBold?: boolean; isItalic?: boolean; color?: string;
+    rotation?: number; baseline?: number;
+    backgroundColor?: string; textBackgroundColor?: string; opacity?: number;
+  };
+  maskColor?: string;
+  isDeleted?: boolean;
   
   // Image specific (Stamp/QR)
   imageData?: string; // Base64 data url
@@ -65,4 +81,10 @@ export interface PdfPage {
   rotation: number;
   isDeleted: boolean;
   annotations: Annotation[];
+  previewWidth?: number;
+  previewHeight?: number;
+  displayWidth?: number;
+  displayHeight?: number;
+  viewportTransform?: number[];
+  ocrComplete?: boolean;
 }

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, X, Download, FileText, ArrowRight, Loader2, CheckCircle2, RotateCw, Trash2, Save, Plus, ScanText, FilePenLine, MousePointer2, Eraser, Type, ChevronLeft, ZoomIn, ZoomOut, Bold, Palette, Highlighter, Minus, Home, Sparkles, Percent, Hand, MousePointerClick, GitCompare, Stamp, QrCode, Grid, Type as TypeIcon, Copy, FileDiff } from 'lucide-react';
 import { FileWithPreview, CompressedResult, PdfPage, Annotation } from '../types';
+import { drawPageEdits, editingFontName, extractNativeText, ocrAnnotations, overlapsOriginal, prepareBrowserFont, textChanged } from '../services/pdfEditing';
 
 // --- Helper Components ---
 const SectionHeader: React.FC<{ title: string; description: string; onBack: () => void }> = ({ title, description, onBack }) => (
@@ -170,7 +171,7 @@ export const CompressorFeature: React.FC<{ initialFiles?: File[], onBack: () => 
             // @ts-ignore
             if (!window.pdfjsLib) throw new Error("PDF.js not loaded");
             // @ts-ignore
-            const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer, isEvalSupported: false }).promise;
             // @ts-ignore
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF();
@@ -657,7 +658,7 @@ export const PdfComparatorFeature: React.FC<{ initialFiles?: File[], onBack: () 
         // @ts-ignore
         if(!window.pdfjsLib) throw new Error("PDF.js not ready");
         // @ts-ignore
-        const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer, isEvalSupported: false }).promise;
         const page = await pdf.getPage(1);
         const viewport = page.getViewport({ scale: 1.5 });
         const canvas = document.createElement('canvas');
@@ -763,6 +764,13 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   const [activeTab, setActiveTab] = useState<'edit' | 'insert'>('edit');
   const [activeTool, setActiveTool] = useState<'cursor' | 'hand' | 'erase' | 'text' | 'line' | 'highlight'>('cursor');
   const [ocrProcessing, setOcrProcessing] = useState(false);
+  const [detectionStatus, setDetectionStatus] = useState('');
+  const [textSearch, setTextSearch] = useState('');
+  const [, refreshFonts] = useState(0);
+  const ocrLock = useRef(false);
+  const importLock = useRef(false);
+  const sourceFileCount = useRef(0);
+  const initializedFiles = useRef(false);
   const [zoomLevel, setZoomLevel] = useState(100);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   
@@ -790,11 +798,9 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
 
   // Initialize
   useEffect(() => {
-    if (initialFiles && initialFiles.length > 0) {
-        if (sourceFiles.length === 0) {
-            addFileAndRender(initialFiles[0]);
-        }
-    }
+    if (!initialFiles.length || initializedFiles.current) return;
+    initializedFiles.current = true;
+    void (async () => { for (const file of initialFiles) await addFileAndRender(file); })();
   }, [initialFiles]);
 
   // Keyboard Delete Handler
@@ -803,7 +809,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
         if (!editingPageId || !selectedAnnotationId) return;
         if (e.key === 'Delete' || e.key === 'Backspace') {
              const activeEl = document.activeElement;
-             if (activeEl?.tagName === 'TEXTAREA') return;
+             if (['TEXTAREA', 'INPUT', 'SELECT'].includes(activeEl?.tagName || '')) return;
              deleteAnnotation(editingPageId, selectedAnnotationId);
         }
     };
@@ -812,6 +818,18 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   }, [editingPageId, selectedAnnotationId]);
 
   const editingPage = editingPageId ? pages.find(p => p.uniqueId === editingPageId) : null;
+
+  useEffect(() => {
+    const text = editingPage?.annotations.filter(a => a.type === 'text' && !a.isDeleted && textChanged(a)) || [];
+    let cancelled = false;
+    const unique = [...new Map(text.map(a => [editingFontName(a), a])).values()];
+    Promise.all(unique.map(prepareBrowserFont)).then(() => {
+      if (!cancelled) refreshFonts(n => n + 1);
+    }).catch(() => {
+      if (!cancelled) setDetectionStatus('Yazı tipi önizlemesi yüklenemedi; kaydetmek için internet bağlantısı gerekir.');
+    });
+    return () => { cancelled = true; };
+  }, [editingPage?.annotations]);
 
   // Auto-zoom and center editor view
   useEffect(() => {
@@ -828,9 +846,8 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
         const containerWidth = container.clientWidth - PADDING;
         const containerHeight = container.clientHeight - PADDING;
 
-        const isRotated = editingPage?.rotation === 90 || editingPage?.rotation === 270;
-        const imageWidth = isRotated ? image.naturalHeight : image.naturalWidth;
-        const imageHeight = isRotated ? image.naturalWidth : image.naturalHeight;
+        const imageWidth = image.naturalWidth;
+        const imageHeight = image.naturalHeight;
 
         if (imageWidth > 0 && imageHeight > 0) {
             const scaleX = containerWidth / imageWidth;
@@ -864,15 +881,17 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
 
 
   const addFileAndRender = async (file: File) => {
+    if (importLock.current) return;
+    importLock.current = true;
     setIsProcessing(true);
     try {
       const arrayBuffer = await file.arrayBuffer();
       // @ts-ignore
       if(!window.pdfjsLib) throw new Error("PDF.js not loaded");
       // @ts-ignore
-      const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer, isEvalSupported: false }).promise;
       const newPages: PdfPage[] = [];
-      const newFileIndex = sourceFiles.length;
+      const newFileIndex = sourceFileCount.current;
 
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
@@ -883,6 +902,14 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
         canvas.width = viewport.width;
 
         await page.render({ canvasContext: context, viewport: viewport }).promise;
+        setDetectionStatus(`Sayfa ${i}/${pdf.numPages}: PDF metni ve yazı tipi ölçüleri okunuyor…`);
+        let annotations: Annotation[] = [];
+        try {
+          annotations = await extractNativeText(page, viewport, canvas);
+        } catch (error) {
+          console.warn('PDF text extraction failed; OCR remains available.', error);
+        }
+        const displayViewport = page.getViewport({ scale: 1 });
         newPages.push({
           uniqueId: Math.random().toString(36).substr(2, 9),
           sourceFileIndex: newFileIndex,
@@ -890,21 +917,29 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
           preview: canvas.toDataURL(),
           rotation: 0,
           isDeleted: false,
-          annotations: []
+          annotations,
+          previewWidth: canvas.width, previewHeight: canvas.height,
+          displayWidth: displayViewport.width, displayHeight: displayViewport.height,
+          viewportTransform: displayViewport.transform,
         });
       }
       setSourceFiles(prev => [...prev, file]);
+      sourceFileCount.current += 1;
       setPages(prev => [...prev, ...newPages]);
+      setDetectionStatus('PDF metni hazır. Taranmış sayfalarda OCR kullanın. Yazı tipi eşleştirmesi ve renkler tahminidir.');
+      await pdf.destroy();
     } catch (e) {
       console.error(e);
       alert("PDF okunurken bir hata oluştu.");
     } finally {
       setIsProcessing(false);
+      importLock.current = false;
     }
   };
 
-  const handleInitialUpload = (fileList: FileList) => {
-    if (fileList[0]) addFileAndRender(fileList[0]);
+  const handleInitialUpload = async (fileList: FileList) => {
+    if (importLock.current) return;
+    for (const file of Array.from(fileList)) await addFileAndRender(file);
   };
 
   const handleRotate = (uniqueId: string) => {
@@ -1116,73 +1151,71 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
 
   // --- Logic ---
   const updateAnnotation = (pageId: string, annotationId: string, updates: Partial<Annotation>) => {
-    setPages(pages.map(p => 
+    setPages(prev => prev.map(p =>
       p.uniqueId === pageId 
-        ? { ...p, annotations: p.annotations.map(a => a.id === annotationId ? { ...a, ...updates } : a) }
+        ? { ...p, annotations: p.annotations.map(a => {
+            if (a.id !== annotationId) return a;
+            const next = { ...a, ...updates };
+            if (updates.fontSize && a.fontSize) next.baseline = (a.baseline ?? a.fontSize * 0.8) * updates.fontSize / a.fontSize;
+            return next;
+          }) }
         : p
     ));
   };
 
   const deleteAnnotation = (pageId: string, annotationId: string) => {
-    setPages(pages.map(p => 
+    setPages(prev => prev.map(p =>
       p.uniqueId === pageId 
-        ? { ...p, annotations: p.annotations.filter(a => a.id !== annotationId) }
+        ? { ...p, annotations: p.annotations.flatMap(a => a.id !== annotationId ? [a] : a.original ? [{ ...a, isDeleted: true }] : []) }
         : p
     ));
     if(selectedAnnotationId === annotationId) setSelectedAnnotationId(null);
   };
 
   const runSmartOcr = async (page: PdfPage) => {
+    if (ocrLock.current) return;
+    if (page.ocrComplete) {
+      setDetectionStatus('Bu sayfada OCR tamamlandı; mevcut düzenlemeler korundu.');
+      return;
+    }
+    ocrLock.current = true;
     setOcrProcessing(true);
+    setDetectionStatus('Türkçe + İngilizce OCR hazırlanıyor…');
     try {
       // @ts-ignore
       const Tesseract = window.Tesseract;
       if(!Tesseract) throw new Error("Tesseract not loaded");
       
       const img = new Image();
+      const ready = new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Sayfa görüntüsü okunamadı.'));
+      });
       img.src = page.preview;
-      await new Promise(r => img.onload = r);
+      await ready;
       
       const { data } = await Tesseract.recognize(
         page.preview,
-        'tur',
-        { logger: (m: any) => console.log(m) }
+        'tur+eng',
+        { logger: (m: any) => setDetectionStatus(`OCR: ${m.status} ${Math.round((m.progress || 0) * 100)}%`) }
       );
-      
-      const newAnnotations: Annotation[] = [];
-      data.lines.forEach((line: any) => {
-         const { bbox, text } = line;
-         if (text.trim().length < 2) return;
-         const x = (bbox.x0 / img.width) * 100;
-         const y = (bbox.y0 / img.height) * 100;
-         const w = ((bbox.x1 - bbox.x0) / img.width) * 100;
-         const h = ((bbox.y1 - bbox.y0) / img.height) * 100;
-         const heightPx = bbox.y1 - bbox.y0;
-         
-         newAnnotations.push({
-           id: Math.random().toString(36).substr(2, 9),
-           type: 'text',
-           content: text.trim(),
-           originalContent: text.trim(),
-           x: x, y: y, width: w, height: h, 
-           fontSize: heightPx * 0.85, 
-           fontFamily: 'Helvetica', 
-           backgroundColor: 'transparent',
-           isInteractive: true,
-           color: '#000000',
-           isBold: false
-         });
-      });
-
-      setPages(prev => prev.map(p => 
-        p.uniqueId === page.uniqueId ? { ...p, annotations: [...p.annotations, ...newAnnotations] } : p
-      ));
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      canvas.getContext('2d')!.drawImage(img, 0, 0);
+      const detected = ocrAnnotations(data, canvas);
+      setPages(prev => prev.map(p => {
+        if (p.uniqueId !== page.uniqueId) return p;
+        const additions = detected.filter(a => !p.annotations.some(b => b.source && overlapsOriginal(a, b)));
+        return { ...p, ocrComplete: true, annotations: [...p.annotations, ...additions] };
+      }));
+      setDetectionStatus(`${detected.length} sözcük algılandı. Boyut, stil ve renkler tahminidir; özgün görüntü değişiklik yapılana kadar korunur.`);
       setActiveTool('cursor');
     } catch (e) {
       console.error(e);
       alert("OCR işlemi sırasında hata oluştu.");
     } finally {
       setOcrProcessing(false);
+      ocrLock.current = false;
     }
   };
 
@@ -1191,37 +1224,14 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
     setIsSaving(true);
     try {
       // @ts-ignore
-      const { PDFDocument, degrees, rgb, StandardFonts } = window.PDFLib;
+      const { PDFDocument, degrees } = window.PDFLib;
       // @ts-ignore
       const fontkit = window.fontkit;
 
       const newPdfDoc = await PDFDocument.create();
       if (fontkit) newPdfDoc.registerFontkit(fontkit);
 
-      let customFont;
-      const customFontUrl = 'https://unpkg.com/@pdf-lib/fontkit@1.1.1/fonts/Roboto/Roboto-Regular.ttf';
-
-      try {
-          const fontBytes = await fetch(customFontUrl).then(res => {
-              if (!res.ok) throw new Error('Font download failed');
-              return res.arrayBuffer();
-          });
-          customFont = await newPdfDoc.embedFont(fontBytes, { subset: true });
-      } catch (fontError) {
-          console.warn("Custom font loading failed, using fallback.", fontError);
-          customFont = await newPdfDoc.embedFont(StandardFonts.Helvetica);
-      }
-      
-      const sanitizeText = (text: string) => {
-          if (customFont.name && customFont.name.includes('Roboto')) return text;
-          return text
-            .replace(/İ/g, 'I').replace(/ı/g, 'i')
-            .replace(/Ğ/g, 'G').replace(/ğ/g, 'g')
-            .replace(/Ü/g, 'U').replace(/ü/g, 'u')
-            .replace(/Ş/g, 'S').replace(/ş/g, 's')
-            .replace(/Ö/g, 'O').replace(/ö/g, 'o')
-            .replace(/Ç/g, 'C').replace(/ç/g, 'c');
-      };
+      const fonts = new Map<string, any>();
 
       const loadedDocs = await Promise.all(
         sourceFiles.map(async (file) => {
@@ -1240,104 +1250,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
            copiedPage.setRotation(degrees(existingRotation + p.rotation));
         }
 
-        const { width, height } = copiedPage.getSize();
-
-        for (const ann of p.annotations) {
-          const x = (ann.x / 100) * width;
-          const y = height - ((ann.y / 100) * height);
-          const w = (ann.width / 100) * width;
-          const h = (ann.height / 100) * height;
-
-          const parseColor = (hex?: string) => {
-             if (!hex || !hex.startsWith('#')) return rgb(0,0,0);
-             const r = parseInt(hex.slice(1, 3), 16) / 255;
-             const g = parseInt(hex.slice(3, 5), 16) / 255;
-             const b = parseInt(hex.slice(5, 7), 16) / 255;
-             return rgb(r, g, b);
-          }
-          const annColor = parseColor(ann.color);
-
-          if (ann.type === 'line') {
-             copiedPage.drawLine({
-                start: { x, y },
-                end: { x: x + w, y: y - h },
-                thickness: ann.lineWidth || 2,
-                color: annColor,
-                opacity: ann.opacity || 1
-             });
-          }
-
-          if (ann.type === 'highlight' || ann.type === 'erase' || (ann.backgroundColor && ann.backgroundColor !== 'transparent')) {
-             let fillColor = annColor;
-             let opacity = ann.opacity || 1;
-
-             if (ann.type === 'erase' || ann.backgroundColor === '#ffffff') {
-                 fillColor = rgb(1, 1, 1);
-                 opacity = 1;
-             } else if (ann.backgroundColor) {
-                 fillColor = parseColor(ann.backgroundColor);
-             }
-
-             copiedPage.drawRectangle({
-                 x: x,
-                 y: y - h,
-                 width: w,
-                 height: h,
-                 color: fillColor,
-                 opacity: opacity
-             });
-          }
-          
-          if (ann.type === 'image' && ann.imageData) {
-              const imgBytes = await fetch(ann.imageData).then(res => res.arrayBuffer());
-              const img = await newPdfDoc.embedPng(imgBytes);
-              copiedPage.drawImage(img, {
-                  x: x,
-                  y: y - h,
-                  width: w,
-                  height: h,
-                  opacity: ann.opacity || 1
-              });
-          }
-
-          if (ann.type === 'text' && ann.content) {
-             // SMART OCR LOGIC:
-             // 1. If this is OCR text and it hasn't changed, skip drawing it.
-             // This preserves the high-quality original image text.
-             if (ann.originalContent && ann.content === ann.originalContent) {
-                 continue;
-             }
-
-             const pdfFontSize = ann.fontSize ? (ann.fontSize / 3.0) : 12; // Adjusted scale for saving
-             const finalContent = sanitizeText(ann.content);
-
-             // 2. If text is MODIFIED (different from original) OR it has a background color:
-             // Draw a rectangle behind it to hide the original underlying image text.
-             // This prevents the "double text" or "blur" effect.
-             if ((ann.originalContent && ann.content !== ann.originalContent) || (ann.textBackgroundColor && ann.textBackgroundColor !== 'transparent')) {
-                 const rectW = ann.originalContent ? w : (customFont.widthOfTextAtSize(finalContent, pdfFontSize) + 4);
-                 const rectH = ann.originalContent ? h : (pdfFontSize + 4);
-                 const rectY = ann.originalContent ? (y - h) : (y - pdfFontSize);
-                 
-                 copiedPage.drawRectangle({
-                     x: x,
-                     y: rectY,
-                     width: rectW,
-                     height: rectH,
-                     color: ann.textBackgroundColor && ann.textBackgroundColor !== 'transparent' ? parseColor(ann.textBackgroundColor) : rgb(1, 1, 1), // Default to white for OCR masking
-                     opacity: 1 // Fully opaque to cover image
-                 });
-             }
-
-             copiedPage.drawText(finalContent, {
-               x: x,
-               y: y - pdfFontSize, 
-               size: pdfFontSize,
-               font: customFont, 
-               color: annColor,
-             });
-          }
-        }
+        await drawPageEdits(newPdfDoc, copiedPage, p, fonts);
         newPdfDoc.addPage(copiedPage);
       }
 
@@ -1350,6 +1263,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {
       console.error(e);
       alert("PDF kaydedilirken bir hata oluştu: " + (e as any).message);
@@ -1426,12 +1340,15 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                     </button>
                     <button 
                     onClick={() => runSmartOcr(editingPage)} 
-                    disabled={ocrProcessing}
+                    disabled={ocrProcessing || editingPage.ocrComplete}
                     className="bg-brand-600 text-white px-3 py-2 rounded-xl text-xs font-bold flex items-center space-x-2"
                     >
                     {ocrProcessing ? <Loader2 className="animate-spin" size={14} /> : <ScanText size={14} />}
-                    <span>OCR</span>
+                    <span>{editingPage.ocrComplete ? 'OCR hazır' : 'OCR (TR + EN)'}</span>
                     </button>
+                    <input type="search" aria-label="Sayfa metninde ara" placeholder="Metinde ara"
+                      value={textSearch} onChange={e => setTextSearch(e.target.value)}
+                      className="w-28 rounded-lg border border-slate-200 p-2 text-xs" />
                  </div>
              </div>
              
@@ -1444,20 +1361,23 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                          onChange={(e) => updateAnnotation(editingPage.uniqueId, selectedAnnotation.id, { fontFamily: e.target.value as any })}
                          className="bg-transparent text-slate-700 text-[10px] font-bold border-none focus:ring-0 cursor-pointer outline-none uppercase tracking-wide"
                      >
-                         <option value="Helvetica">Helvetica</option>
-                         <option value="Times New Roman">Times</option>
-                         <option value="Courier">Courier</option>
+                         <option value="Helvetica">Sans (Noto)</option>
+                         <option value="Times New Roman">Serif (Noto)</option>
+                         <option value="Courier">Mono (Noto)</option>
                      </select>
                      </div>
 
                      <div className="flex items-center bg-slate-100/80 rounded-lg h-8 px-2">
                      <input 
                          type="number"
-                         value={Math.round(selectedAnnotation.fontSize || 24)}
-                         onChange={(e) => updateAnnotation(editingPage.uniqueId, selectedAnnotation.id, { fontSize: parseInt(e.target.value) })}
+                         min={1}
+                         max={500}
+                         step={0.1}
+                         value={Math.round((selectedAnnotation.fontSize || 24) * (editingPage.displayHeight || 1) / (editingPage.previewHeight || 2) * 10) / 10}
+                         onChange={(e) => { const value = Number(e.target.value); if (Number.isFinite(value) && value > 0) updateAnnotation(editingPage.uniqueId, selectedAnnotation.id, { fontSize: value * (editingPage.previewHeight || 2) / (editingPage.displayHeight || 1) }); }}
                          className="w-8 bg-transparent border-none text-center text-xs font-bold focus:ring-0 p-0"
                      />
-                     <span className="text-[10px] text-slate-400 ml-1 font-bold">PX</span>
+                     <span className="text-[10px] text-slate-400 ml-1 font-bold">pt</span>
                      </div>
 
                      <button 
@@ -1466,6 +1386,14 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                      >
                      <Bold size={14} />
                      </button>
+                     <button
+                       title="İtalik"
+                       onClick={() => updateAnnotation(editingPage.uniqueId, selectedAnnotation.id, { isItalic: !selectedAnnotation.isItalic })}
+                       className={`h-8 w-8 rounded-lg italic font-serif ${selectedAnnotation.isItalic ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600'}`}
+                     >I</button>
+                     {selectedAnnotation.source && <span className="text-[10px] text-slate-500 max-w-44 truncate" title={selectedAnnotation.detectedFont}>
+                       {selectedAnnotation.source === 'native' ? 'PDF ölçüleri' : `OCR ~%${Math.round(selectedAnnotation.confidence || 0)}`} · stil tahmini
+                     </span>}
 
                      <div className="relative group h-8 w-8 rounded-lg bg-slate-100 flex items-center justify-center overflow-hidden cursor-pointer shadow-inner border border-slate-200">
                      <div className="w-5 h-5 rounded-full border border-slate-200/50 shadow-sm" style={{ backgroundColor: selectedAnnotation.color || '#000000' }}></div>
@@ -1478,6 +1406,11 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                      </div>
                 </div>
              )}
+             <p role="status" aria-live="polite" className="text-[10px] text-slate-500 max-w-xl mt-1 whitespace-normal">
+               {detectionStatus || 'Özgün görüntü korunur. Metne tıklayın; taşımak için seçili kutunun ok simgesini sürükleyin.'}
+               {' '}Düzenlenen metin Noto ile eşleştirilir; karmaşık arka planlar tam onarılamaz. Silme görsel kapatmadır, güvenli sansür değildir.
+               {editingPage.rotation !== 0 && ` Ek ${editingPage.rotation}° sayfa dönüşü kaydetmede uygulanır; düzenleme kaynak yönündedir.`}
+             </p>
             </div>
         </div>
 
@@ -1539,7 +1472,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                 src={editingPage.preview} 
                 alt="Page" 
                 className="max-w-none select-none pointer-events-none"
-                style={{ transform: `rotate(${editingPage.rotation}deg)` }}
+                style={{ display: 'block' }}
                 draggable={false}
               />
               
@@ -1554,7 +1487,15 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                  ></div>
               )}
 
-              {editingPage.annotations.map(ann => {
+              {editingPage.annotations.filter(ann => ann.original && textChanged(ann)).map(ann => (
+                <div key={`mask-${ann.id}`} className="absolute pointer-events-none z-10" style={{
+                  left: `${ann.original!.x}%`, top: `${ann.original!.y}%`,
+                  width: `${ann.original!.width}%`, height: `${ann.original!.height}%`,
+                  backgroundColor: ann.maskColor || '#ffffff',
+                  transform: `rotate(${ann.original!.rotation || 0}deg)`, transformOrigin: 'top left',
+                }} />
+              ))}
+              {editingPage.annotations.filter(ann => !ann.isDeleted).map(ann => {
                 const isSelected = selectedAnnotationId === ann.id;
                 
                 if (ann.type === 'line') {
@@ -1586,39 +1527,29 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                     )
                 }
                 
-                // --- Text Visibility Logic ---
-                // 1. Is it modified OCR text?
-                const isModifiedOcr = ann.originalContent && ann.content !== ann.originalContent;
-                // 2. Is it new manually added text? (No originalContent)
-                const isNewText = !ann.originalContent;
-                // 3. Should the text be visible (black/color)? 
-                //    Yes if selected OR modified OR it's new text. 
-                //    Only unmodified OCR text remains transparent (to show image).
-                const shouldShowText = isSelected || isModifiedOcr || isNewText;
-                
-                // 4. Should the background be white?
-                //    Yes if selected OR modified OCR (to mask image).
-                //    New text usually has transparent bg unless selected.
-                const shouldShowBackground = (ann.type === 'text' && (isSelected || isModifiedOcr));
+                const shouldShowText = textChanged(ann);
 
                 return (
                   <div
                     key={ann.id}
-                    className={`absolute ${activeTool === 'cursor' ? 'cursor-pointer' : ''} ${isSelected ? 'ring-2 ring-brand-500 ring-offset-1 z-[50]' : (ann.type === 'text' && ann.isInteractive ? 'hover:bg-white/30 z-[40]' : 'z-[20]')}`}
+                    className={`absolute ${activeTool === 'cursor' ? 'cursor-pointer' : ''} ${textSearch && ann.content?.toLocaleLowerCase('tr').includes(textSearch.toLocaleLowerCase('tr')) ? 'outline outline-2 outline-amber-400' : ''} ${isSelected ? 'ring-2 ring-brand-500 ring-offset-1 z-[50]' : (ann.type === 'text' && ann.isInteractive ? 'hover:bg-white/30 z-[40]' : 'z-[20]')}`}
                     style={{
                       left: `${ann.x}%`,
                       top: `${ann.y}%`,
                       width: `${ann.width}%`,
                       height: `${ann.height}%`,
-                      backgroundColor: shouldShowBackground ? '#ffffff' : (ann.type === 'erase' ? 'white' : (ann.type === 'highlight' ? ann.color : (ann.backgroundColor || 'transparent'))),
+                      backgroundColor: ann.type === 'erase' ? 'white' : (ann.type === 'highlight' ? ann.color : (ann.textBackgroundColor || ann.backgroundColor || 'transparent')),
                       opacity: ann.type === 'highlight' ? (ann.opacity || 0.4) : (ann.opacity || 1),
                       mixBlendMode: ann.type === 'highlight' ? 'multiply' : 'normal',
                       transition: draggingAnnotationId === ann.id ? 'none' : 'background-color 0.2s',
+                      transform: `rotate(${ann.rotation || 0}deg)`,
+                      transformOrigin: 'top left',
                     }}
                     onPointerDown={(e) => {
                        if (activeTool === 'cursor') {
                           e.stopPropagation();
-                          if (ann.type !== 'text') e.preventDefault();
+                          e.preventDefault();
+                          e.currentTarget.setPointerCapture(e.pointerId);
                           
                           setSelectedAnnotationId(ann.id);
                           const rect = canvasRef.current?.getBoundingClientRect();
@@ -1635,6 +1566,9 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                         <div className="w-full h-full relative group">
                             <img src={ann.imageData} className="w-full h-full object-contain pointer-events-none"/>
                              {isSelected && (
+                               <button title="Metni taşı" aria-label="Metni taşı" className="absolute -top-5 left-0 bg-brand-600 text-white p-1 z-30 cursor-move"><MousePointer2 size={12} /></button>
+                             )}
+                             {isSelected && (
                                 <button 
                                     onPointerDown={(e) => { e.stopPropagation(); deleteAnnotation(editingPage.uniqueId, ann.id); }}
                                     className="absolute -top-3 -right-3 bg-red-500 text-white rounded-full p-1 z-30 hover:scale-110 shadow-sm transition-transform"
@@ -1648,6 +1582,9 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                     {ann.type === 'text' && (
                       <div className="relative w-full h-full group pointer-events-auto">
                          {isSelected && (
+                           <button title="Metni taşı" aria-label="Metni taşı" className="absolute -top-5 left-0 bg-brand-600 text-white p-1 z-30 cursor-move"><MousePointer2 size={12} /></button>
+                         )}
+                         {isSelected && (
                            <button 
                               onPointerDown={(e) => { e.stopPropagation(); deleteAnnotation(editingPage.uniqueId, ann.id); }}
                               className="absolute -top-3 -right-3 bg-red-500 text-white rounded-full p-1 z-30 shadow-sm transition-transform"
@@ -1655,19 +1592,39 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                               <X size={12} />
                            </button>
                          )}
+                         {shouldShowText && (
+                           <svg className="absolute inset-0 pointer-events-none" width="100%" height="100%" style={{ overflow: 'visible' }}>
+                             <text x="0" y={ann.baseline ?? (ann.fontSize || 24) * 0.8}
+                               fill={ann.color || '#000000'} fontSize={ann.fontSize || 24}
+                               fontStyle={ann.fontFamily === 'Courier' && ann.isItalic ? 'italic' : 'normal'}
+                               fontFamily={`${editingFontName(ann)}, ${ann.fontFamily === 'Courier' ? 'monospace' : ann.fontFamily === 'Times New Roman' ? 'serif' : 'sans-serif'}`}
+                               style={{ whiteSpace: 'pre' }}>
+                               {(ann.content || '').replace(/\r/g, '').split('\n').map((line, index) =>
+                                 <tspan key={index} x="0" dy={index ? (ann.fontSize || 24) * 1.2 : 0}>{line}</tspan>
+                               )}
+                             </text>
+                           </svg>
+                         )}
                          <textarea
+                            aria-label={`Metin düzenle: ${ann.content || 'boş'}`}
+                            wrap="off"
                             value={ann.content}
+                            onPointerDown={e => {
+                              if (activeTool !== 'cursor') return;
+                              e.stopPropagation();
+                              setSelectedAnnotationId(ann.id);
+                            }}
                             onChange={(e) => updateAnnotation(editingPage.uniqueId, ann.id, { content: e.target.value })}
                             className={`w-full h-full resize-none focus:outline-none p-0 m-0 border-none overflow-hidden whitespace-pre-wrap leading-tight selection:bg-brand-200 ${!isSelected && ann.isInteractive ? 'text-transparent selection:text-transparent cursor-text' : ''}`}
                             style={{ 
                               fontSize: ann.fontSize ? `${ann.fontSize}px` : '14px',
-                              fontFamily: ann.fontFamily === 'Times New Roman' ? 'Times New Roman, serif' : 
-                                          ann.fontFamily === 'Courier' ? 'Courier New, monospace' : 
-                                          'Helvetica, Arial, sans-serif',
-                              color: shouldShowText ? (ann.color || '#000000') : 'transparent',
-                              fontWeight: ann.isBold ? 'bold' : 'normal',
+                              fontFamily: editingFontName(ann),
+                              color: 'transparent',
+                              caretColor: ann.color || '#000000',
+                              padding: 0, margin: 0, border: 0, borderRadius: 0,
+                              boxShadow: 'none', boxSizing: 'border-box',
                               backgroundColor: 'transparent',
-                              lineHeight: 1.1,
+                              lineHeight: 1.2,
                             }}
                             spellCheck={false}
                             disabled={!isSelected && activeTool !== 'cursor'}
@@ -1696,7 +1653,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
              <div className="hidden md:block flex-1"></div>
              <button 
                 onClick={handleSave} 
-                disabled={pages.length === 0 || isSaving}
+                disabled={pages.length === 0 || isSaving || isProcessing || ocrProcessing || pages.every(p => p.isDeleted)}
                 className="flex-1 md:flex-none flex items-center justify-center bg-brand-600 text-white px-10 py-4 rounded-2xl font-bold hover:bg-brand-700 transition-all shadow-xl shadow-brand-500/30 disabled:opacity-50 transform active:scale-95"
              >
                 {isSaving ? <Loader2 className="animate-spin mr-2" size={20} /> : <Save size={20} className="mr-2" />}
@@ -1713,6 +1670,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
           />
        </div>
 
+       {detectionStatus && <p role="status" className="text-sm text-slate-600 mb-4">{detectionStatus}</p>}
        {pages.length === 0 ? (
           <div className="flex-1 border-4 border-dashed border-slate-200 rounded-[2rem] md:rounded-[2.5rem] flex flex-col items-center justify-center bg-slate-50/50 hover:bg-white hover:border-brand-400 transition-all duration-300 cursor-pointer py-16 md:py-32 group" onClick={() => fileInputRef.current?.click()}>
              <div className="w-20 h-20 md:w-28 md:h-28 bg-white rounded-3xl flex items-center justify-center mb-6 md:mb-8 text-slate-300 group-hover:text-brand-500 group-hover:scale-110 group-hover:rotate-3 transition-all shadow-lg">

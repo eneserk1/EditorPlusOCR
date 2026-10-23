@@ -1,5 +1,5 @@
 {
   "name": "BelgeEditor+",
-  "description": "Kurumsal, güvenli ve local çalışan belge yönetim, sıkıştırma ve düzenleme aracı.",
+  "description": "Enes Erkul tarafından geliştirilen; PDF metin düzenleme, Türkçe OCR, belge sıkıştırma, dönüştürme ve karşılaştırma aracı. Belgeler cihazınızda işlenir.",
   "requestFramePermissions": []
 }

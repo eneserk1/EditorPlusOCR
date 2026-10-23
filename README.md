@@ -1,20 +1,32 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# BelgeEditor+
 
-# Run and deploy your AI Studio app
+**Enes Erkul tarafından geliştirildi.**
 
-This contains everything you need to run your app locally.
+BelgeEditor+, PDF belgelerini düzenlemek ve taranmış belgelerdeki metinleri Türkçe/İngilizce OCR ile tanımak için geliştirilmiş bir web uygulamasıdır. Belge sıkıştırma, görselden PDF oluşturma, sayfa döndürme/silme, QR kodu ve filigran ekleme, PDF ve metin karşılaştırma araçlarını bir araya getirir.
 
-View your app in AI Studio: https://ai.studio/apps/drive/1UgiRyrAVU-h2UO27AYcEAHxcpAd61EL5
+## PDF düzenleme ve OCR
 
-## Run Locally
+- Metin içeren PDF'lerde mevcut metin bilgileri kullanılır; taranmış sayfalarda OCR ile düzenlenebilir metin alanları oluşturulur.
+- Değiştirilmemiş alanların özgün görünümü korunur. Metin, boyut, yazı tipi ve renk özellikleri düzenlenebilir.
+- Taramalarda font ailesi, kalınlık, renk ve boyut algılama tahminidir. Özel/gömülü fontların birebir yeniden oluşturulması veya fotoğraf, desen ve karmaşık arka planlarda kusursuz metin değiştirme garantisi yoktur; bu uygulama Adobe Acrobat Pro'nun tüm özelliklerinin karşılığı değildir.
+- Kaydetmeden önce özellikle düşük çözünürlüklü taramalarda tanınan metni ve düzenlenen alanları kontrol edin.
+- Metnin üzerini kapatmak güvenli sansürleme değildir; hassas bilgi kaldırmak için özel bir PDF redaksiyon aracı kullanın.
 
-**Prerequisites:**  Node.js
+## Gizlilik
 
+Belgeler tarayıcıda işlenir; belge içerikleri bir sunucuya veya yapay zekâ servisine gönderilmez. Kütüphaneler, OCR motoru/dil dosyaları ve yazı tipleri harici kaynaklardan indirilir. Bu nedenle ilk açılış, OCR ve font yükleme için internet bağlantısı gerekir; tam çevrimdışı çalışma garanti edilmez. PDF araçları için API anahtarı gerekmez.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Yerelde çalıştırma
+
+Node.js 22 veya üzeri kullanın.
+
+1. Bağımlılıkları yükleyin: `npm install`
+2. Geliştirme sunucusunu başlatın: `npm run dev`
+3. Üretim derlemesi oluşturun: `npm run build`
+4. Derlemeyi yerelde inceleyin: `npm run preview`
+
+## Vercel'de yayınlama
+
+Depoyu Vercel'de **Add New → Project → Import Git Repository** ile içe aktarın. `vercel.json`, Vite derlemesini ve `dist` çıktı klasörünü tanımlar. PDF/OCR özellikleri için ortam değişkeni gerekmez. GitHub entegrasyonu kurulduktan sonra bağlı üretim dalına gönderilen commit'ler otomatik yayınlanır.
+
+Bu depoda Vercel hesabı veya proje kimliği bulunmaz. Canlıya yayınlamak için yetkili bir Vercel hesabıyla projeyi bağlamak gerekir.

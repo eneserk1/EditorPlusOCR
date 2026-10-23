@@ -47,7 +47,7 @@ export default function App() {
                   <div className="space-y-2">
                       <h2 className="text-4xl md:text-5xl font-extrabold leading-tight">
                         Güvenli & <br/>
-                        <span className="text-brand-400">Local</span> Çözüm.
+                        <span className="text-brand-400">Yerel</span> Çözüm.
                       </h2>
                       <p className="text-slate-400 text-lg">Kurumsal belgeleriniz tarayıcınızdan asla çıkmaz.</p>
                   </div>
@@ -58,8 +58,8 @@ export default function App() {
                               <WifiOff size={24} />
                           </div>
                           <div>
-                              <h3 className="font-bold text-lg">Tamamen Çevrimdışı</h3>
-                              <p className="text-slate-400 text-sm">İnternet bağlantısı olmadan da çalışır. Sunucuya yükleme yok.</p>
+                              <h3 className="font-bold text-lg">Cihazınızda İşleme</h3>
+                              <p className="text-slate-400 text-sm">Belgeler sunucuya yüklenmez. OCR dil dosyaları ve yazı tipleri ilk kullanımda internetten indirilir.</p>
                           </div>
                       </div>
                       <div className="flex items-start space-x-4">
@@ -85,7 +85,7 @@ export default function App() {
           </div>
 
           <div className="relative z-10 pt-8">
-              <p className="text-xs text-slate-500">© {new Date().getFullYear()} BelgeEditor+. Tüm hakları saklıdır.</p>
+              <p className="text-xs text-slate-500">Enes Erkul tarafından geliştirildi. © {new Date().getFullYear()} BelgeEditor+.</p>
           </div>
        </div>
 
@@ -97,7 +97,7 @@ export default function App() {
             <div className="w-full max-w-5xl animate-slide-up relative z-10">
                 <div className="text-center mb-12">
                     <h2 className="text-4xl md:text-5xl font-extrabold text-slate-900 mb-4 tracking-tight">Ne yapmak istersiniz?</h2>
-                    <p className="text-slate-500 text-lg max-w-2xl mx-auto">Tüm araçlar verilerinizi cihazınızda işler. %100 güvenli ve gizlidir.</p>
+                    <p className="text-slate-500 text-lg max-w-2xl mx-auto">PDF metinlerini düzenleyin, taranmış belgeleri OCR ile tanıyın, dosyalarınızı dönüştürün ve karşılaştırın. Belgeleriniz cihazınızda işlenir.</p>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-6">

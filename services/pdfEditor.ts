@@ -190,7 +190,8 @@ export async function recognizePdfPage(worker: any, page: PdfPage): Promise<Anno
 export async function exportEditedPdf(files: File[], pages: PdfPage[]): Promise<Uint8Array> {
   const lib = globals().PDFLib;
   if (!lib) throw new Error('PDF kitaplığı yüklenemedi.');
-  const { PDFDocument, StandardFonts, rgb, degrees, pushGraphicsState, popGraphicsState, concatTransformationMatrix } = lib;
+  const { PDFDocument, StandardFonts, rgb, degrees, pushGraphicsState, popGraphicsState,
+    concatTransformationMatrix, beginText, endText, setTextRenderingMode, TextRenderingMode } = lib;
   const doc = await PDFDocument.create();
   if (globals().fontkit) doc.registerFontkit(globals().fontkit);
   const sources = await Promise.all(files.map(async file => PDFDocument.load(await file.arrayBuffer(), { updateMetadata: false })));
@@ -276,32 +277,15 @@ export async function exportEditedPdf(files: File[], pages: PdfPage[]): Promise<
           if (encodable) lines.forEach(line => font.encodeText(line));
         } catch { encodable = false; }
         if (encodable) {
+          if (unchangedOcr) copy.pushOperators(pushGraphicsState(), beginText(),
+            setTextRenderingMode(TextRenderingMode.Invisible), endText());
           lines.forEach((line, index) => copy.drawText(line, {
             x: baselineX - Math.sin(angle) * index * size * 1.2, y: y - Math.cos(angle) * index * size * 1.2, font, size, color: color(ann.color),
             rotate: degrees(-(ann.textAngle || 0)),
-            opacity: unchangedOcr ? 0 : 1,
           }));
+          if (unchangedOcr) copy.pushOperators(popGraphicsState());
         } else {
-          if (ann.source?.kind === 'ocr') {
-            throw new Error('OCR metnini aranabilir kaydetmek için Unicode yazı tipi gereklidir. Yerel fonts dosyalarını ve fontkit yüklemesini kontrol edip tekrar deneyin.');
-          }
-          // Browser fonts retain Unicode glyphs without downloading or transliterating Turkish text.
-          const canvas = document.createElement('canvas'), scale = 3;
-          const ctx = canvas.getContext('2d')!;
-          await document.fonts.load(cssPdfFont(ann), ann.content);
-          ctx.font = cssPdfFont({ ...ann, fontSize: size * scale });
-          const textWidth = Math.max(...lines.map(line => ctx.measureText(line).width), 1);
-          const pad = size * scale * .3;
-          canvas.width = Math.ceil(textWidth + pad * 2);
-          canvas.height = Math.ceil((lines.length * 1.2 + .4) * size * scale);
-          ctx.font = cssPdfFont({ ...ann, fontSize: size * scale });
-          ctx.fillStyle = ann.color || '#000000';
-          lines.forEach((line, i) => ctx.fillText(line, pad, pad + size * scale + i * size * scale * 1.2));
-          const png = await doc.embedPng(canvas.toDataURL('image/png'));
-          const imageX = -pad / scale, imageY = (pad + size * scale - canvas.height) / scale;
-          copy.drawImage(png, { x: baselineX + Math.cos(angle) * imageX + Math.sin(angle) * imageY,
-            y: y - Math.sin(angle) * imageX + Math.cos(angle) * imageY,
-            width: canvas.width / scale, height: canvas.height / scale, rotate: degrees(-(ann.textAngle || 0)) });
+          throw new Error('Metin aranabilir kaydedilemedi: Unicode yazı tipi veya bazı karakterler desteklenmiyor. Yerel /fonts dosyalarını ve fontkit yüklemesini kontrol edin ya da desteklenmeyen karakterleri düzeltin.');
         }
       }
     }

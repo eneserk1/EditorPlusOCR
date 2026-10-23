@@ -1373,7 +1373,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                 </div>
              )}
              <p role="status" className="text-[11px] text-slate-600 max-w-3xl px-2 pt-1 whitespace-normal">{editorStatus}</p>
-             <p className="text-[10px] text-slate-500 max-w-3xl px-2 whitespace-normal">Tarama fontları yaklaşık tahmin edilir. OCR aranabilir Unicode metinle kaydedilir; değişmeyen tarama görünümü korunur. Diğer metinler gerekirse görüntü olur (seçilemez). Karmaşık zeminlerde örtme izi kalabilir. Bu işlem güvenli sansür değildir.</p>
+             <p className="text-[10px] text-slate-500 max-w-3xl px-2 whitespace-normal">Tarama fontları yaklaşık tahmin edilir. OCR aranabilir Unicode metinle kaydedilir; değişmeyen tarama görünümü korunur. Font/karakter desteği eksikse kaydetme durdurulur. Karmaşık zeminlerde örtme izi kalabilir. Bu işlem güvenli sansür değildir.</p>
             </div>
         </div>
 
@@ -1461,6 +1461,11 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
               ))}
               {editingPage.annotations.filter(ann => !ann.isDeleted).map(ann => {
                 const isSelected = selectedAnnotationId === ann.id;
+                const previewScale = (editingPage.previewWidth || 1) / (editingPage.viewport?.width || 1);
+                const fontPixels = (ann.fontSize || 12) * previewScale;
+                const baselinePoints = ann.source
+                  ? (ann.source.baselineOffset ?? (ann.source.baseline - ann.source.y) / 100 * (editingPage.viewport?.height || 1))
+                  : (ann.fontSize || 12) * .8;
                 
                 if (ann.type === 'line') {
                     return (
@@ -1564,10 +1569,10 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                             onChange={(e) => updateAnnotation(editingPage.uniqueId, ann.id, { content: e.target.value })}
                             className="absolute left-0 w-full resize-none focus:outline-none p-0 m-0 border-none overflow-hidden selection:bg-brand-200 cursor-text"
                             style={{ 
-                             fontSize: `${(ann.fontSize || 12) * (editingPage.previewWidth || imageRef.current?.naturalWidth || 1) / (editingPage.viewport?.width || 1)}px`,
-                             width: `${Math.max(ann.width / 100 * (editingPage.previewWidth || 1), pdfTextWidth(ann) * (editingPage.previewWidth || 1) / (editingPage.viewport?.width || 1))}px`,
-                             top: `${((ann.source ? (ann.source.baselineOffset ?? (ann.source.baseline - ann.source.y) / 100 * (editingPage.viewport?.height || 1)) : (ann.fontSize || 12) * .8) - pdfTextBaseline(ann)) * (editingPage.previewWidth || 1) / (editingPage.viewport?.width || 1)}px`,
-                             height: `${Math.max(ann.height / 100 * (editingPage.previewHeight || 1), (ann.content?.split('\n').length || 1) * (ann.fontSize || 12) * (editingPage.previewWidth || 1) / (editingPage.viewport?.width || 1) * 1.2)}px`,
+                             fontSize: `${fontPixels}px`,
+                             width: `${Math.max(ann.width / 100 * (editingPage.previewWidth || 1), pdfTextWidth({ ...ann, fontSize: fontPixels }))}px`,
+                             top: `${baselinePoints * previewScale - pdfTextBaseline({ ...ann, fontSize: fontPixels })}px`,
+                             height: `${Math.max(ann.height / 100 * (editingPage.previewHeight || 1), (ann.content?.split('\n').length || 1) * fontPixels * 1.2)}px`,
                               fontFamily: pdfCssFamily(ann),
                               color: shouldShowText ? (ann.color || '#000000') : 'transparent',
                               fontWeight: ann.isBold ? 'bold' : 'normal',
@@ -1596,7 +1601,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
     <div className="max-w-full mx-auto flex flex-col p-4 md:p-8 animate-fade-in w-full md:px-12">
        <SectionHeader title="Editör+" description="PDF belgelerinizi düzenleyin, imzalayın." onBack={onBack} />
        <p role="status" className="text-sm text-slate-600 mb-2">{isProcessing ? 'PDF okunuyor… ' : ''}{editorStatus}</p>
-       <p className="text-xs text-slate-500 mb-4">Yerel PDF metni otomatik alınır; taramalar Türkçe + İngilizce OCR ile açılır ve aranabilir Unicode metinle kaydedilir. Font/zemin tahminleri birebir olmayabilir. Değişmeyen alanlar korunur. OCR dışındaki metinlerde görüntü yedeği kullanılabilir (seçilemez). Örtme güvenli sansür değildir.</p>
+       <p className="text-xs text-slate-500 mb-4">Yerel PDF metni otomatik alınır; taramalar Türkçe + İngilizce OCR ile açılır ve aranabilir Unicode metinle kaydedilir. Font/zemin tahminleri birebir olmayabilir. Değişmeyen alanlar korunur. Font/karakter desteği eksikse kaydetme durdurulur; metni veya font dosyalarını düzeltin. Örtme güvenli sansür değildir.</p>
 
        <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-8 shrink-0 space-y-4 md:space-y-0">
           <div className="flex space-x-3 w-full">

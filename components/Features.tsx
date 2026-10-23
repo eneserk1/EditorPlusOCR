@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { Upload, X, Download, FileText, ArrowRight, Loader2, CheckCircle2, RotateCw, Trash2, Save, Plus, ScanText, FilePenLine, MousePointer2, Eraser, Type, ChevronLeft, ZoomIn, ZoomOut, Bold, Palette, Highlighter, Minus, Home, Sparkles, Percent, Hand, MousePointerClick, GitCompare, Stamp, QrCode, Grid, Type as TypeIcon, Copy, FileDiff } from 'lucide-react';
 import { FileWithPreview, CompressedResult, PdfPage, Annotation } from '../types';
-import { drawPageEdits, editingFontName, extractNativeText, ocrAnnotations, originalMaskBounds, overlapsOriginal, prepareBrowserFont, textFontStyle, textLayout, textChanged } from '../services/pdfEditing';
+import { drawPageEdits, editingFontName, extractNativeText, ocrAnnotations, originalMaskBounds, overlapsOriginal, prepareBrowserFont, textFontStyle, textLayout, textChanged, usesSourceOutlines } from '../services/pdfEditing';
 
 // --- Helper Components ---
 const SectionHeader: React.FC<{ title: string; description: string; onBack: () => void }> = ({ title, description, onBack }) => (
@@ -773,6 +773,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   const initializedFiles = useRef(false);
   const [zoomLevel, setZoomLevel] = useState(100);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [textSelection, setTextSelection] = useState({ id: '', start: 0, end: 0 });
   
   // Modal States
   const [showQrModal, setShowQrModal] = useState(false);
@@ -1068,6 +1069,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
             isBold: inherited?.isBold || false,
             isItalic: inherited?.isItalic || false,
             sourceFont: inherited?.sourceFont,
+            sourceSpacing: inherited?.sourceSpacing,
             rotation: inherited?.rotation,
             backgroundColor: 'transparent'
         };
@@ -1210,8 +1212,12 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
         ? { ...p, annotations: p.annotations.map(a => {
             if (a.id !== annotationId) return a;
             const next = { ...a, ...updates };
-            if (updates.fontFamily !== undefined || updates.fontSize !== undefined || updates.isBold !== undefined || updates.isItalic !== undefined) {
+            if (updates.fontSize !== undefined && a.fontSize) {
+              next.baseline = (a.baseline ?? a.fontSize * 0.8) * updates.fontSize / a.fontSize;
+            }
+            if (updates.fontFamily !== undefined || updates.isBold !== undefined || updates.isItalic !== undefined) {
               next.sourceFont = undefined;
+              next.sourceSpacing = undefined;
               next.textStyle = undefined;
               next.useSourceMetrics = false;
               next.baseline = (next.fontSize || 24) * 0.8;
@@ -1451,7 +1457,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                        className={`h-8 w-8 rounded-lg italic font-serif ${selectedAnnotation.isItalic ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600'}`}
                      >I</button>
                      {selectedAnnotation.source && <span className="text-[10px] text-slate-500 max-w-44 truncate" title={selectedAnnotation.detectedFont}>
-                       {selectedAnnotation.source === 'native' ? 'PDF ölçüleri' : `OCR ~%${Math.round(selectedAnnotation.confidence || 0)}`} · stil tahmini
+                       {usesSourceOutlines(selectedAnnotation) ? 'Özgün PDF glifleri · eksik glifler yedek' : selectedAnnotation.source === 'native' ? 'PDF ölçüleri · yedek yazı tipi' : `OCR ~%${Math.round(selectedAnnotation.confidence || 0)} · stil tahmini`}
                      </span>}
 
                      <div className="relative group h-8 w-8 rounded-lg bg-slate-100 flex items-center justify-center overflow-hidden cursor-pointer shadow-inner border border-slate-200">
@@ -1658,7 +1664,10 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                          )}
                          {shouldShowText && (
                            <svg className="absolute inset-0 pointer-events-none" width="100%" height="100%" style={{ overflow: 'visible' }}>
-                             <text x="0" y={layout!.baseline}
+                             {layout!.outlines ? <g transform={`translate(0 ${layout!.baseline}) scale(${layout!.scaleX} 1)`} fill={ann.color || '#000000'}>
+                               {layout!.outlines.glyphs.map((glyph, index) => <path key={index} d={glyph.path}
+                                 transform={`translate(${glyph.x} ${glyph.y}) scale(${glyph.scale} ${-glyph.scale})`} />)}
+                             </g> : <text x="0" y={layout!.baseline}
                                transform={`scale(${layout!.scaleX} 1)`}
                                fill={ann.color || '#000000'} fontSize={layout!.size}
                                fontStyle={textFontStyle(ann)}
@@ -1667,9 +1676,24 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                                {(ann.content || '').replace(/\r/g, '').split('\n').map((line, index) =>
                                  <tspan key={index} x="0" dy={index ? layout!.size * 1.2 : 0}>{line}</tspan>
                                )}
-                             </text>
+                             </text>}
                            </svg>
                          )}
+                         {isSelected && layout!.outlines && textSelection.id === ann.id && (() => {
+                           const carets = layout!.outlines!.carets;
+                           const caret = carets[Math.min(textSelection.end, carets.length - 1)];
+                           return <>
+                             {layout!.outlines!.glyphs.filter(g => g.end > textSelection.start && g.start < textSelection.end).map((g, i) =>
+                               <div key={i} className="absolute pointer-events-none bg-blue-300/40" style={{
+                                 left: g.x * layout!.scaleX, top: layout!.baseline + g.y - layout!.size * 0.8,
+                                 width: g.advance * layout!.scaleX, height: layout!.size,
+                               }} />)}
+                             {textSelection.start === textSelection.end && caret && <div className="absolute pointer-events-none" style={{
+                               left: caret.x * layout!.scaleX, top: layout!.baseline + caret.y - layout!.size * 0.8,
+                               width: 1, height: layout!.size, backgroundColor: ann.color || '#000000',
+                             }} />}
+                           </>;
+                         })()}
                          <textarea
                             aria-label={`Metin düzenle: ${ann.content || 'boş'}`}
                             wrap="off"
@@ -1680,7 +1704,23 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                               setSelectedAnnotationId(ann.id);
                             }}
                             onChange={(e) => updateAnnotation(editingPage.uniqueId, ann.id, { content: e.target.value })}
-                            className={`w-full h-full resize-none focus:outline-none p-0 m-0 border-none overflow-hidden whitespace-pre-wrap leading-tight selection:bg-brand-200 ${!isSelected && ann.isInteractive ? 'text-transparent selection:text-transparent cursor-text' : ''}`}
+                            onSelect={e => setTextSelection({ id: ann.id, start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd })}
+                            onClick={e => {
+                              if (!layout!.outlines) return;
+                              if (!e.shiftKey && e.currentTarget.selectionStart !== e.currentTarget.selectionEnd) return;
+                              const rect = canvasRef.current!.getBoundingClientRect();
+                              const angle = (ann.rotation || 0) * Math.PI / 180;
+                              const scale = zoomLevel / 100;
+                              const dx = (e.clientX - rect.left) / scale - ann.x / 100 * (editingPage.previewWidth || 1);
+                              const dy = (e.clientY - rect.top) / scale - ann.y / 100 * (editingPage.previewHeight || 1);
+                              const x = (dx * Math.cos(angle) + dy * Math.sin(angle)) / layout!.scaleX;
+                              const y = -dx * Math.sin(angle) + dy * Math.cos(angle) - layout!.baseline + layout!.size * 0.4;
+                              const nearest = layout!.outlines.carets.reduce((best, caret, index, all) =>
+                                Math.abs(caret.x - x) + Math.abs(caret.y - y) * 4 < Math.abs(all[best].x - x) + Math.abs(all[best].y - y) * 4 ? index : best, 0);
+                              e.currentTarget.setSelectionRange(e.shiftKey ? e.currentTarget.selectionStart : nearest, nearest);
+                              setTextSelection({ id: ann.id, start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd });
+                            }}
+                            className={`w-full h-full resize-none focus:outline-none p-0 m-0 border-none overflow-hidden whitespace-pre-wrap leading-tight ${layout!.outlines ? 'selection:bg-transparent' : 'selection:bg-brand-200'} ${!isSelected && ann.isInteractive ? 'text-transparent selection:text-transparent cursor-text' : ''}`}
                             style={{ 
                               fontSize: layout!.size,
                               fontFamily: editingFontName(ann),
@@ -1691,7 +1731,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                               height: layout!.height + Math.abs(layout!.baselineOffset),
                               transform: `scaleX(${layout!.scaleX})`, transformOrigin: 'top left',
                               pointerEvents: activeTool === 'cursor' ? 'auto' : 'none',
-                              caretColor: ann.color || '#000000',
+                              caretColor: layout!.outlines ? 'transparent' : ann.color || '#000000',
                               padding: 0, margin: 0, border: 0, borderRadius: 0,
                               boxShadow: 'none', boxSizing: 'border-box',
                               backgroundColor: 'transparent',

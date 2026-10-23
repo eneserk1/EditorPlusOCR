@@ -49,6 +49,12 @@ export interface Annotation {
   confidence?: number;
   detectedFont?: string;
   sourceFont?: string;
+  sourceSpacing?: {
+    horizontalScale: number;
+    charSpacing: number; // em units
+    wordSpacing: number;
+    glyphs: { text: string; advance: number }[]; // PDF advances, including TJ adjustments
+  };
   sourceGlyphHeight?: number;
   textStyle?: { width: number; height: number }; // Fixed source calibration, inherited by new text
   useSourceMetrics?: boolean;

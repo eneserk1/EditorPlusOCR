@@ -3,7 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>BelgeEditor+ | Güvenli Belge Çözümleri</title>
+    <title>BelgeEditor+ | PDF Düzenleme ve OCR · Enes Erkul</title>
+    <meta name="description" content="Enes Erkul tarafından geliştirilen BelgeEditor+: PDF metin düzenleme, Türkçe ve İngilizce OCR, belge sıkıştırma, dönüştürme ve karşılaştırma. Belgeleriniz tarayıcınızda işlenir." />
+    <meta name="author" content="Enes Erkul" />
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- jsPDF for Local PDF Generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -73,6 +75,18 @@
     </script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
+      @font-face { font-family: 'Belge Sans'; src: url('/fonts/DejaVuSans.ttf') format('truetype'); font-weight: 400; font-style: normal; font-display: swap; }
+      @font-face { font-family: 'Belge Sans'; src: url('/fonts/DejaVuSans-Bold.ttf') format('truetype'); font-weight: 700; font-style: normal; font-display: swap; }
+      @font-face { font-family: 'Belge Sans'; src: url('/fonts/DejaVuSans-Oblique.ttf') format('truetype'); font-weight: 400; font-style: italic; font-display: swap; }
+      @font-face { font-family: 'Belge Sans'; src: url('/fonts/DejaVuSans-BoldOblique.ttf') format('truetype'); font-weight: 700; font-style: italic; font-display: swap; }
+      @font-face { font-family: 'Belge Serif'; src: url('/fonts/DejaVuSerif.ttf') format('truetype'); font-weight: 400; font-style: normal; font-display: swap; }
+      @font-face { font-family: 'Belge Serif'; src: url('/fonts/DejaVuSerif-Bold.ttf') format('truetype'); font-weight: 700; font-style: normal; font-display: swap; }
+      @font-face { font-family: 'Belge Serif'; src: url('/fonts/DejaVuSerif-Italic.ttf') format('truetype'); font-weight: 400; font-style: italic; font-display: swap; }
+      @font-face { font-family: 'Belge Serif'; src: url('/fonts/DejaVuSerif-BoldItalic.ttf') format('truetype'); font-weight: 700; font-style: italic; font-display: swap; }
+      @font-face { font-family: 'Belge Mono'; src: url('/fonts/DejaVuSansMono.ttf') format('truetype'); font-weight: 400; font-style: normal; font-display: swap; }
+      @font-face { font-family: 'Belge Mono'; src: url('/fonts/DejaVuSansMono-Bold.ttf') format('truetype'); font-weight: 700; font-style: normal; font-display: swap; }
+      @font-face { font-family: 'Belge Mono'; src: url('/fonts/DejaVuSansMono-Oblique.ttf') format('truetype'); font-weight: 400; font-style: italic; font-display: swap; }
+      @font-face { font-family: 'Belge Mono'; src: url('/fonts/DejaVuSansMono-BoldOblique.ttf') format('truetype'); font-weight: 700; font-style: italic; font-display: swap; }
       body { font-family: 'Inter', sans-serif; }
       
       /* Modern Background Pattern */
@@ -88,17 +102,6 @@
       ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
       ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
     </style>
-  <script type="importmap">
-{
-  "imports": {
-    "react": "https://aistudiocdn.com/react@^19.2.0",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-    "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.554.0",
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0"
-  }
-}
-</script>
 </head>
   <body class="bg-grid-pattern text-slate-900 antialiased min-h-screen">
     <div id="root"></div>

@@ -1,0 +1,230 @@
+import { Annotation, PdfPage } from '../types';
+
+const globals = () => window as any;
+const id = () => Math.random().toString(36).slice(2);
+export const pdfTextChanged = (a: Annotation): boolean => {
+  if (!a.source) return true;
+  const s = a.source;
+  return !!a.isDeleted || a.x !== s.x || a.y !== s.y || a.width !== s.width ||
+    a.height !== s.height || Object.entries(s.original).some(([key, value]) => (a as any)[key] !== value);
+};
+
+const family = (name: string): NonNullable<Annotation['fontFamily']> =>
+  /courier|mono/i.test(name) ? 'Courier' : /times|serif/i.test(name) && !/sans/i.test(name) ? 'Times New Roman' : 'Helvetica';
+
+export const cssPdfFont = (a: Annotation) =>
+  `${a.isItalic ? 'italic ' : ''}${a.isBold ? 'bold ' : ''}${a.fontSize || 12}px ${a.fontFamily === 'Courier' ? '"Courier New", monospace' : a.fontFamily === 'Times New Roman' ? '"Times New Roman", serif' : 'Arial, Helvetica, sans-serif'}`;
+
+export async function previewImage(src: string): Promise<HTMLImageElement> {
+  const image = new Image();
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error('Sayfa görüntüsü yüklenemedi.'));
+    image.src = src;
+  });
+  return image;
+}
+
+function colors(canvas: HTMLCanvasElement, x: number, y: number, w: number, h: number) {
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return { background: '#ffffff', color: '#000000' };
+  const hex = (v: number[]) => '#' + v.map(n => Math.round(n).toString(16).padStart(2, '0')).join('');
+  const pixel = (px: number, py: number) => Array.from(ctx.getImageData(
+    Math.max(0, Math.min(canvas.width - 1, Math.round(px))),
+    Math.max(0, Math.min(canvas.height - 1, Math.round(py))), 1, 1).data).slice(0, 3);
+  const samples = [pixel(x - 2, y - 2), pixel(x + w + 2, y - 2), pixel(x - 2, y + h + 2), pixel(x + w + 2, y + h + 2)];
+  const bg = [0, 1, 2].map(c => samples.map(p => p[c]).sort((a, b) => a - b)[2]);
+  let fg = bg, distance = 0;
+  for (let py = y; py < y + h; py += Math.max(1, h / 16)) {
+    for (let px = x; px < x + w; px += Math.max(1, w / 40)) {
+      const p = pixel(px, py);
+      const d = p.reduce((sum, v, c) => sum + (v - bg[c]) ** 2, 0);
+      if (d > distance) { distance = d; fg = p; }
+    }
+  }
+  return { background: hex(bg), color: hex(fg) };
+}
+
+function sourced(a: Annotation, kind: 'native' | 'ocr', background: string, extra = {}): Annotation {
+  return {
+    ...a, originalContent: a.content, isInteractive: true,
+    source: {
+      kind, x: a.x, y: a.y, width: a.width, height: a.height,
+      baseline: a.baseline ?? a.y + a.height * .8, background, ...extra,
+      original: { content: a.content || '', fontSize: a.fontSize || 12, fontFamily: a.fontFamily || 'Helvetica',
+        isBold: !!a.isBold, isItalic: !!a.isItalic, color: a.color || '#000000' },
+    },
+  };
+}
+
+export async function extractPdfText(page: any, canvas: HTMLCanvasElement): Promise<Annotation[]> {
+  const viewport = page.getViewport({ scale: 1 });
+  const text = await page.getTextContent();
+  const result: Annotation[] = [];
+  for (const item of text.items) {
+    if (!item.str?.trim() || !item.transform) continue;
+    const style = text.styles[item.fontName] || {};
+    const m = globals().pdfjsLib.Util.transform(viewport.transform, item.transform);
+    const fontSize = Math.hypot(m[2], m[3]);
+    if (!fontSize) continue;
+    const angle = Math.atan2(m[1], m[0]);
+    const ascent = (style.ascent ?? (style.descent ? 1 + style.descent : .8)) * fontSize;
+    const width = Math.max(item.width * viewport.scale, fontSize * .2);
+    const height = fontSize * ((style.ascent ?? .8) - (style.descent ?? -.2));
+    const x = m[4] + Math.sin(angle) * ascent, y = m[5] - Math.cos(angle) * ascent;
+    const name = `${item.fontName} ${style.fontFamily || ''}`;
+    const sample = colors(canvas, x * canvas.width / viewport.width, y * canvas.height / viewport.height,
+      width * canvas.width / viewport.width, height * canvas.height / viewport.height);
+    result.push(sourced({
+      id: id(), type: 'text', content: item.str, x: x / viewport.width * 100,
+      y: y / viewport.height * 100, width: width / viewport.width * 100, height: height / viewport.height * 100,
+      fontSize, fontFamily: family(name), isBold: /bold|black|heavy/i.test(name),
+      isItalic: /italic|oblique/i.test(name), color: sample.color,
+      baseline: m[5] / viewport.height * 100, textAngle: angle * 180 / Math.PI,
+    }, 'native', sample.background, { fontName: item.fontName }));
+  }
+  return result;
+}
+
+export function mergeOcr(existing: Annotation[], incoming: Annotation[]): Annotation[] {
+  // Never replace source records: edited and deleted text must survive another OCR pass.
+  const result = [...existing];
+  for (const candidate of incoming) {
+    const duplicate = result.some(a => {
+      if (a.type !== 'text') return false;
+      const b = a.source || a;
+      const overlap = Math.max(0, Math.min(b.x + b.width, candidate.x + candidate.width) - Math.max(b.x, candidate.x)) *
+        Math.max(0, Math.min(b.y + b.height, candidate.y + candidate.height) - Math.max(b.y, candidate.y));
+      return overlap / Math.max(.001, Math.min(b.width * b.height, candidate.width * candidate.height)) > .35;
+    });
+    if (!duplicate) result.push(candidate);
+  }
+  return result;
+}
+
+export async function createPdfOcrWorker(onProgress: (message: string) => void): Promise<any> {
+  if (!globals().Tesseract) throw new Error('OCR kitaplığı yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.');
+  const worker = globals().Tesseract.createWorker({
+    logger: (m: any) => onProgress(`${m.status === 'recognizing text' ? 'Metin tanınıyor' : 'OCR hazırlanıyor'} %${Math.round((m.progress || 0) * 100)}`),
+  });
+  try {
+    await worker.load();
+    await worker.loadLanguage('tur+eng');
+    await worker.initialize('tur+eng');
+    return worker;
+  } catch (error) {
+    await worker.terminate().catch(() => {});
+    throw error;
+  }
+}
+
+export async function recognizePdfPage(worker: any, page: PdfPage): Promise<Annotation[]> {
+  const image = await previewImage(page.preview);
+  const canvas = document.createElement('canvas');
+  canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+  canvas.getContext('2d')!.drawImage(image, 0, 0);
+  const { data } = await worker.recognize(canvas);
+  const pageHeight = page.viewport?.height || image.naturalHeight / 2;
+  return (data.lines || []).filter((line: any) => line.text?.trim() && line.bbox).map((line: any) => {
+    const b = line.bbox, h = b.y1 - b.y0;
+    const words = line.words || [];
+    const sample = colors(canvas, b.x0, b.y0, b.x1 - b.x0, h);
+    const baseline = line.baseline?.y0 ?? b.y1 - h * .15;
+    const fontName = words.find((w: any) => w.font_name)?.font_name || '';
+    return sourced({
+      id: id(), type: 'text', content: line.text.trim(),
+      x: b.x0 / canvas.width * 100, y: b.y0 / canvas.height * 100,
+      width: (b.x1 - b.x0) / canvas.width * 100, height: h / canvas.height * 100,
+      baseline: baseline / canvas.height * 100,
+      fontSize: Math.max(1, h / canvas.height * pageHeight / .95),
+      fontFamily: family(fontName), isBold: !!words[0]?.is_bold, isItalic: !!words[0]?.is_italic,
+      color: sample.color,
+    }, 'ocr', sample.background, { confidence: line.confidence, fontName });
+  });
+}
+
+export async function exportEditedPdf(files: File[], pages: PdfPage[]): Promise<Uint8Array> {
+  const lib = globals().PDFLib;
+  if (!lib) throw new Error('PDF kitaplığı yüklenemedi.');
+  const { PDFDocument, StandardFonts, rgb, degrees, pushGraphicsState, popGraphicsState, concatTransformationMatrix } = lib;
+  const doc = await PDFDocument.create();
+  const sources = await Promise.all(files.map(async file => PDFDocument.load(await file.arrayBuffer())));
+  const fonts = new Map<string, any>();
+  const color = (hex = '#000000') => {
+    const valid = /^#[\da-f]{6}$/i.test(hex) ? hex : '#000000';
+    return rgb(...[1, 3, 5].map(i => parseInt(valid.slice(i, i + 2), 16) / 255));
+  };
+  for (const page of pages.filter(p => !p.isDeleted)) {
+    const [copy] = await doc.copyPages(sources[page.sourceFileIndex], [page.originalPageIndex]);
+    const v = page.viewport || { width: copy.getWidth(), height: copy.getHeight(), transform: [1, 0, 0, -1, 0, copy.getHeight()] };
+    const [a, b, c, d, e, f] = v.transform;
+    const det = a * d - b * c;
+    // Map bottom-left viewport coordinates back into original PDF user space (crop/rotation included).
+    copy.pushOperators(pushGraphicsState(), concatTransformationMatrix(
+      d / det, -b / det, c / det, -a / det,
+      (c * f - d * e - c * v.height) / det, (b * e - a * f + a * v.height) / det));
+    const geometry = (r: { x: number; y: number; width: number; height: number }) => ({
+      x: r.x * v.width / 100, y: v.height - (r.y + r.height) * v.height / 100,
+      width: r.width * v.width / 100, height: r.height * v.height / 100,
+    });
+    // Mask all original locations before painting replacements, so moved text is not erased by a later mask.
+    for (const ann of page.annotations) {
+      if (ann.source && pdfTextChanged(ann)) {
+        const g = geometry(ann.source);
+        copy.drawRectangle({ ...g, color: color(ann.source.background) });
+      }
+    }
+    for (const ann of page.annotations) {
+      if (ann.isDeleted || (ann.source && !pdfTextChanged(ann))) continue;
+      const g = geometry(ann);
+      if (ann.type === 'erase' || ann.type === 'highlight') {
+        copy.drawRectangle({ ...g, color: color(ann.type === 'erase' ? '#ffffff' : ann.color), opacity: ann.opacity ?? 1 });
+      } else if (ann.type === 'line') {
+        copy.drawLine({ start: { x: g.x, y: g.y + g.height }, end: { x: g.x + g.width, y: g.y },
+          thickness: ann.lineWidth || 2, color: color(ann.color), opacity: ann.opacity ?? 1 });
+      } else if (ann.type === 'image' && ann.imageData) {
+        copy.drawImage(await doc.embedPng(ann.imageData), { ...g, opacity: ann.opacity ?? 1 });
+      } else if (ann.type === 'text' && ann.content) {
+        const size = Math.max(1, ann.fontSize || 12);
+        const name = ann.fontFamily === 'Courier'
+          ? (ann.isBold ? (ann.isItalic ? StandardFonts.CourierBoldOblique : StandardFonts.CourierBold) : ann.isItalic ? StandardFonts.CourierOblique : StandardFonts.Courier)
+          : ann.fontFamily === 'Times New Roman'
+            ? (ann.isBold ? (ann.isItalic ? StandardFonts.TimesRomanBoldItalic : StandardFonts.TimesRomanBold) : ann.isItalic ? StandardFonts.TimesRomanItalic : StandardFonts.TimesRoman)
+            : (ann.isBold ? (ann.isItalic ? StandardFonts.HelveticaBoldOblique : StandardFonts.HelveticaBold) : ann.isItalic ? StandardFonts.HelveticaOblique : StandardFonts.Helvetica);
+        if (!fonts.has(name)) fonts.set(name, await doc.embedFont(name));
+        const font = fonts.get(name);
+        const baselineOffset = ann.source ? (ann.source.baseline - ann.source.y) * v.height / 100 : size * .8;
+        const y = v.height - ann.y * v.height / 100 - baselineOffset;
+        const lines = ann.content.split('\n');
+        let encodable = true;
+        try { lines.forEach(line => font.encodeText(line)); } catch { encodable = false; }
+        if (encodable) {
+          lines.forEach((line, index) => copy.drawText(line, {
+            x: g.x, y: y - index * size * 1.2, font, size, color: color(ann.color),
+            rotate: degrees(-(ann.textAngle || 0)),
+          }));
+        } else {
+          // Browser fonts retain Unicode glyphs without downloading or transliterating Turkish text.
+          const canvas = document.createElement('canvas'), scale = 3;
+          const ctx = canvas.getContext('2d')!;
+          ctx.font = cssPdfFont({ ...ann, fontSize: size * scale });
+          const textWidth = Math.max(...lines.map(line => ctx.measureText(line).width), 1);
+          const pad = size * scale * .3;
+          canvas.width = Math.ceil(textWidth + pad * 2);
+          canvas.height = Math.ceil((lines.length * 1.2 + .4) * size * scale);
+          ctx.font = cssPdfFont({ ...ann, fontSize: size * scale });
+          ctx.fillStyle = ann.color || '#000000';
+          lines.forEach((line, i) => ctx.fillText(line, pad, pad + size * scale + i * size * scale * 1.2));
+          const png = await doc.embedPng(canvas.toDataURL('image/png'));
+          copy.drawImage(png, { x: g.x - pad / scale, y: y + (pad + size * scale - canvas.height) / scale,
+            width: canvas.width / scale, height: canvas.height / scale, rotate: degrees(-(ann.textAngle || 0)) });
+        }
+      }
+    }
+    copy.pushOperators(popGraphicsState());
+    copy.setRotation(degrees((copy.getRotation().angle + page.rotation) % 360));
+    doc.addPage(copy);
+  }
+  if (!doc.getPageCount()) throw new Error('Kaydetmek için en az bir sayfa bırakın.');
+  return doc.save();
+}

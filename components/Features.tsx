@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, X, Download, FileText, ArrowRight, Loader2, CheckCircle2, RotateCw, Trash2, Save, Plus, ScanText, FilePenLine, MousePointer2, Eraser, Type, ChevronLeft, ZoomIn, ZoomOut, Bold, Palette, Highlighter, Minus, Home, Sparkles, Percent, Hand, MousePointerClick, GitCompare, Stamp, QrCode, Grid, Type as TypeIcon, Copy, FileDiff } from 'lucide-react';
 import { FileWithPreview, CompressedResult, PdfPage, Annotation } from '../types';
+import { createPdfOcrWorker, exportEditedPdf, extractPdfText, mergeOcr, pdfTextChanged, recognizePdfPage } from '../services/pdfEditor';
 
 // --- Helper Components ---
 const SectionHeader: React.FC<{ title: string; description: string; onBack: () => void }> = ({ title, description, onBack }) => (
@@ -763,6 +764,12 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   const [activeTab, setActiveTab] = useState<'edit' | 'insert'>('edit');
   const [activeTool, setActiveTool] = useState<'cursor' | 'hand' | 'erase' | 'text' | 'line' | 'highlight'>('cursor');
   const [ocrProcessing, setOcrProcessing] = useState(false);
+  const [editorStatus, setEditorStatus] = useState('');
+  const [undoPages, setUndoPages] = useState<PdfPage[] | null>(null);
+  const ocrWorkerRef = useRef<any>(null);
+  const busyRef = useRef(false);
+  const mountedRef = useRef(true);
+  const initializedRef = useRef(false);
   const [zoomLevel, setZoomLevel] = useState(100);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   
@@ -788,10 +795,20 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      void ocrWorkerRef.current?.terminate().catch(() => {});
+      ocrWorkerRef.current = null;
+    };
+  }, []);
+
   // Initialize
   useEffect(() => {
     if (initialFiles && initialFiles.length > 0) {
-        if (sourceFiles.length === 0) {
+        if (!initializedRef.current) {
+            initializedRef.current = true;
             addFileAndRender(initialFiles[0]);
         }
     }
@@ -803,7 +820,8 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
         if (!editingPageId || !selectedAnnotationId) return;
         if (e.key === 'Delete' || e.key === 'Backspace') {
              const activeEl = document.activeElement;
-             if (activeEl?.tagName === 'TEXTAREA') return;
+             if (['TEXTAREA', 'INPUT', 'SELECT'].includes(activeEl?.tagName || '') || (activeEl as HTMLElement)?.isContentEditable) return;
+             e.preventDefault();
              deleteAnnotation(editingPageId, selectedAnnotationId);
         }
     };
@@ -864,13 +882,17 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
 
 
   const addFileAndRender = async (file: File) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setIsProcessing(true);
+    let pdf: any;
+    let scannedPages: PdfPage[] = [];
     try {
       const arrayBuffer = await file.arrayBuffer();
       // @ts-ignore
       if(!window.pdfjsLib) throw new Error("PDF.js not loaded");
       // @ts-ignore
-      const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       const newPages: PdfPage[] = [];
       const newFileIndex = sourceFiles.length;
 
@@ -883,6 +905,9 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
         canvas.width = viewport.width;
 
         await page.render({ canvasContext: context, viewport: viewport }).promise;
+        const baseViewport = page.getViewport({ scale: 1 });
+        const annotations = await extractPdfText(page, canvas);
+        setEditorStatus(`Sayfa ${i}/${pdf.numPages}: ${annotations.length} yerel metin alanı bulundu.`);
         newPages.push({
           uniqueId: Math.random().toString(36).substr(2, 9),
           sourceFileIndex: newFileIndex,
@@ -890,17 +915,24 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
           preview: canvas.toDataURL(),
           rotation: 0,
           isDeleted: false,
-          annotations: []
+          annotations,
+          viewport: { width: baseViewport.width, height: baseViewport.height, transform: [...baseViewport.transform] },
+          previewWidth: canvas.width,
+          previewHeight: canvas.height,
         });
       }
       setSourceFiles(prev => [...prev, file]);
       setPages(prev => [...prev, ...newPages]);
+      scannedPages = newPages.filter(p => !p.annotations.length);
     } catch (e) {
       console.error(e);
       alert("PDF okunurken bir hata oluştu.");
     } finally {
+      await pdf?.destroy();
+      busyRef.current = false;
       setIsProcessing(false);
     }
+    if (scannedPages.length && mountedRef.current) await runSmartOcr(scannedPages);
   };
 
   const handleInitialUpload = (fileList: FileList) => {
@@ -1116,7 +1148,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
 
   // --- Logic ---
   const updateAnnotation = (pageId: string, annotationId: string, updates: Partial<Annotation>) => {
-    setPages(pages.map(p => 
+    setPages(prev => prev.map(p => 
       p.uniqueId === pageId 
         ? { ...p, annotations: p.annotations.map(a => a.id === annotationId ? { ...a, ...updates } : a) }
         : p
@@ -1124,65 +1156,45 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   };
 
   const deleteAnnotation = (pageId: string, annotationId: string) => {
-    setPages(pages.map(p => 
+    setUndoPages(pages);
+    setPages(prev => prev.map(p => 
       p.uniqueId === pageId 
-        ? { ...p, annotations: p.annotations.filter(a => a.id !== annotationId) }
+        ? { ...p, annotations: p.annotations.flatMap(a => a.id !== annotationId ? [a] : a.source ? [{ ...a, isDeleted: true }] : []) }
         : p
     ));
     if(selectedAnnotationId === annotationId) setSelectedAnnotationId(null);
   };
 
-  const runSmartOcr = async (page: PdfPage) => {
+  const runSmartOcr = async (target: PdfPage | PdfPage[]) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setOcrProcessing(true);
     try {
-      // @ts-ignore
-      const Tesseract = window.Tesseract;
-      if(!Tesseract) throw new Error("Tesseract not loaded");
-      
-      const img = new Image();
-      img.src = page.preview;
-      await new Promise(r => img.onload = r);
-      
-      const { data } = await Tesseract.recognize(
-        page.preview,
-        'tur',
-        { logger: (m: any) => console.log(m) }
-      );
-      
-      const newAnnotations: Annotation[] = [];
-      data.lines.forEach((line: any) => {
-         const { bbox, text } = line;
-         if (text.trim().length < 2) return;
-         const x = (bbox.x0 / img.width) * 100;
-         const y = (bbox.y0 / img.height) * 100;
-         const w = ((bbox.x1 - bbox.x0) / img.width) * 100;
-         const h = ((bbox.y1 - bbox.y0) / img.height) * 100;
-         const heightPx = bbox.y1 - bbox.y0;
-         
-         newAnnotations.push({
-           id: Math.random().toString(36).substr(2, 9),
-           type: 'text',
-           content: text.trim(),
-           originalContent: text.trim(),
-           x: x, y: y, width: w, height: h, 
-           fontSize: heightPx * 0.85, 
-           fontFamily: 'Helvetica', 
-           backgroundColor: 'transparent',
-           isInteractive: true,
-           color: '#000000',
-           isBold: false
-         });
+      const targets = (Array.isArray(target) ? target : [target]).filter(p => !p.isDeleted);
+      let current = 0;
+      const worker = await createPdfOcrWorker(message => {
+        if (mountedRef.current) setEditorStatus(`OCR ${current + 1}/${targets.length}: ${message}`);
       });
-
-      setPages(prev => prev.map(p => 
-        p.uniqueId === page.uniqueId ? { ...p, annotations: [...p.annotations, ...newAnnotations] } : p
-      ));
+      ocrWorkerRef.current = worker;
+      if (!mountedRef.current) return;
+      for (const page of targets) {
+        if (!mountedRef.current) break;
+        const incoming = await recognizePdfPage(worker, page);
+        if (!mountedRef.current) break;
+        setPages(prev => prev.map(p => p.uniqueId === page.uniqueId
+          ? { ...p, ocrCompleted: true, annotations: mergeOcr(p.annotations, incoming) } : p));
+        current++;
+        setEditorStatus(`OCR ${current}/${targets.length} tamamlandı. Metni tıklayarak düzenleyin.`);
+      }
       setActiveTool('cursor');
     } catch (e) {
       console.error(e);
-      alert("OCR işlemi sırasında hata oluştu.");
+      if (mountedRef.current) setEditorStatus('OCR başarısız: dil verileri için internet gerekir. Tamamlanan sayfalar ve düzenlemeler korundu; tekrar deneyebilirsiniz.');
     } finally {
-      setOcrProcessing(false);
+      await ocrWorkerRef.current?.terminate().catch(() => {});
+      ocrWorkerRef.current = null;
+      busyRef.current = false;
+      if (mountedRef.current) setOcrProcessing(false);
     }
   };
 
@@ -1190,158 +1202,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
     if (sourceFiles.length === 0) return;
     setIsSaving(true);
     try {
-      // @ts-ignore
-      const { PDFDocument, degrees, rgb, StandardFonts } = window.PDFLib;
-      // @ts-ignore
-      const fontkit = window.fontkit;
-
-      const newPdfDoc = await PDFDocument.create();
-      if (fontkit) newPdfDoc.registerFontkit(fontkit);
-
-      let customFont;
-      const customFontUrl = 'https://unpkg.com/@pdf-lib/fontkit@1.1.1/fonts/Roboto/Roboto-Regular.ttf';
-
-      try {
-          const fontBytes = await fetch(customFontUrl).then(res => {
-              if (!res.ok) throw new Error('Font download failed');
-              return res.arrayBuffer();
-          });
-          customFont = await newPdfDoc.embedFont(fontBytes, { subset: true });
-      } catch (fontError) {
-          console.warn("Custom font loading failed, using fallback.", fontError);
-          customFont = await newPdfDoc.embedFont(StandardFonts.Helvetica);
-      }
-      
-      const sanitizeText = (text: string) => {
-          if (customFont.name && customFont.name.includes('Roboto')) return text;
-          return text
-            .replace(/İ/g, 'I').replace(/ı/g, 'i')
-            .replace(/Ğ/g, 'G').replace(/ğ/g, 'g')
-            .replace(/Ü/g, 'U').replace(/ü/g, 'u')
-            .replace(/Ş/g, 'S').replace(/ş/g, 's')
-            .replace(/Ö/g, 'O').replace(/ö/g, 'o')
-            .replace(/Ç/g, 'C').replace(/ç/g, 'c');
-      };
-
-      const loadedDocs = await Promise.all(
-        sourceFiles.map(async (file) => {
-          const ab = await file.arrayBuffer();
-          return await PDFDocument.load(ab);
-        })
-      );
-
-      const activePages = pages.filter(p => !p.isDeleted);
-      
-      for (const p of activePages) {
-        const sourceDoc = loadedDocs[p.sourceFileIndex];
-        const [copiedPage] = await newPdfDoc.copyPages(sourceDoc, [p.originalPageIndex]);
-        if (p.rotation !== 0) {
-           const existingRotation = copiedPage.getRotation().angle;
-           copiedPage.setRotation(degrees(existingRotation + p.rotation));
-        }
-
-        const { width, height } = copiedPage.getSize();
-
-        for (const ann of p.annotations) {
-          const x = (ann.x / 100) * width;
-          const y = height - ((ann.y / 100) * height);
-          const w = (ann.width / 100) * width;
-          const h = (ann.height / 100) * height;
-
-          const parseColor = (hex?: string) => {
-             if (!hex || !hex.startsWith('#')) return rgb(0,0,0);
-             const r = parseInt(hex.slice(1, 3), 16) / 255;
-             const g = parseInt(hex.slice(3, 5), 16) / 255;
-             const b = parseInt(hex.slice(5, 7), 16) / 255;
-             return rgb(r, g, b);
-          }
-          const annColor = parseColor(ann.color);
-
-          if (ann.type === 'line') {
-             copiedPage.drawLine({
-                start: { x, y },
-                end: { x: x + w, y: y - h },
-                thickness: ann.lineWidth || 2,
-                color: annColor,
-                opacity: ann.opacity || 1
-             });
-          }
-
-          if (ann.type === 'highlight' || ann.type === 'erase' || (ann.backgroundColor && ann.backgroundColor !== 'transparent')) {
-             let fillColor = annColor;
-             let opacity = ann.opacity || 1;
-
-             if (ann.type === 'erase' || ann.backgroundColor === '#ffffff') {
-                 fillColor = rgb(1, 1, 1);
-                 opacity = 1;
-             } else if (ann.backgroundColor) {
-                 fillColor = parseColor(ann.backgroundColor);
-             }
-
-             copiedPage.drawRectangle({
-                 x: x,
-                 y: y - h,
-                 width: w,
-                 height: h,
-                 color: fillColor,
-                 opacity: opacity
-             });
-          }
-          
-          if (ann.type === 'image' && ann.imageData) {
-              const imgBytes = await fetch(ann.imageData).then(res => res.arrayBuffer());
-              const img = await newPdfDoc.embedPng(imgBytes);
-              copiedPage.drawImage(img, {
-                  x: x,
-                  y: y - h,
-                  width: w,
-                  height: h,
-                  opacity: ann.opacity || 1
-              });
-          }
-
-          if (ann.type === 'text' && ann.content) {
-             // SMART OCR LOGIC:
-             // 1. If this is OCR text and it hasn't changed, skip drawing it.
-             // This preserves the high-quality original image text.
-             if (ann.originalContent && ann.content === ann.originalContent) {
-                 continue;
-             }
-
-             const pdfFontSize = ann.fontSize ? (ann.fontSize / 3.0) : 12; // Adjusted scale for saving
-             const finalContent = sanitizeText(ann.content);
-
-             // 2. If text is MODIFIED (different from original) OR it has a background color:
-             // Draw a rectangle behind it to hide the original underlying image text.
-             // This prevents the "double text" or "blur" effect.
-             if ((ann.originalContent && ann.content !== ann.originalContent) || (ann.textBackgroundColor && ann.textBackgroundColor !== 'transparent')) {
-                 const rectW = ann.originalContent ? w : (customFont.widthOfTextAtSize(finalContent, pdfFontSize) + 4);
-                 const rectH = ann.originalContent ? h : (pdfFontSize + 4);
-                 const rectY = ann.originalContent ? (y - h) : (y - pdfFontSize);
-                 
-                 copiedPage.drawRectangle({
-                     x: x,
-                     y: rectY,
-                     width: rectW,
-                     height: rectH,
-                     color: ann.textBackgroundColor && ann.textBackgroundColor !== 'transparent' ? parseColor(ann.textBackgroundColor) : rgb(1, 1, 1), // Default to white for OCR masking
-                     opacity: 1 // Fully opaque to cover image
-                 });
-             }
-
-             copiedPage.drawText(finalContent, {
-               x: x,
-               y: y - pdfFontSize, 
-               size: pdfFontSize,
-               font: customFont, 
-               color: annColor,
-             });
-          }
-        }
-        newPdfDoc.addPage(copiedPage);
-      }
-
-      const pdfBytes = await newPdfDoc.save();
+      const pdfBytes = await exportEditedPdf(sourceFiles, pages);
       const blob = new Blob([pdfBytes], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -1350,6 +1211,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {
       console.error(e);
       alert("PDF kaydedilirken bir hata oluştu: " + (e as any).message);

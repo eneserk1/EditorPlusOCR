@@ -42,6 +42,30 @@ export interface Annotation {
   fontSize?: number;
   fontFamily?: 'Helvetica' | 'Times New Roman' | 'Courier';
   isBold?: boolean;
+  isItalic?: boolean;
+  /** Immutable source geometry/style in the unrotated preview coordinate system. */
+  source?: {
+    kind: 'native' | 'ocr';
+    fontName?: string;
+    confidence?: number;
+    baseline: number; // Percentage from preview top
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    background: string;
+    original: {
+      content: string;
+      fontSize: number;
+      fontFamily: 'Helvetica' | 'Times New Roman' | 'Courier';
+      isBold: boolean;
+      isItalic: boolean;
+      color: string;
+    };
+  };
+  baseline?: number;
+  textAngle?: number; // Clockwise degrees in preview space
+  isDeleted?: boolean;
   
   // Image specific (Stamp/QR)
   imageData?: string; // Base64 data url
@@ -65,4 +89,13 @@ export interface PdfPage {
   rotation: number;
   isDeleted: boolean;
   annotations: Annotation[];
+  /** PDF.js scale-1 viewport, including the original crop box and rotation. */
+  viewport?: {
+    width: number;
+    height: number;
+    transform: number[];
+  };
+  previewWidth?: number;
+  previewHeight?: number;
+  ocrCompleted?: boolean;
 }

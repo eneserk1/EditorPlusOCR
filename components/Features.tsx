@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, X, Download, FileText, ArrowRight, Loader2, CheckCircle2, RotateCw, Trash2, Save, Plus, ScanText, FilePenLine, MousePointer2, Eraser, Type, ChevronLeft, ZoomIn, ZoomOut, Bold, Palette, Highlighter, Minus, Home, Sparkles, Percent, Hand, MousePointerClick, GitCompare, Stamp, QrCode, Grid, Type as TypeIcon, Copy, FileDiff } from 'lucide-react';
 import { FileWithPreview, CompressedResult, PdfPage, Annotation } from '../types';
-import { createPdfOcrWorker, exportEditedPdf, extractPdfText, mergeOcr, pdfCssFamily, pdfTextBaseline, pdfTextChanged, pdfTextWidth, recognizePdfPage } from '../services/pdfEditor';
+import { createPdfOcrWorker, cssPdfFont, exportEditedPdf, extractPdfText, mergeOcr, pdfCssFamily, pdfTextBaseline, pdfTextChanged, pdfTextWidth, recognizePdfPage } from '../services/pdfEditor';
 
 // --- Helper Components ---
 const SectionHeader: React.FC<{ title: string; description: string; onBack: () => void }> = ({ title, description, onBack }) => (
@@ -766,6 +766,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   const [ocrProcessing, setOcrProcessing] = useState(false);
   const [editorStatus, setEditorStatus] = useState('');
   const [undoPages, setUndoPages] = useState<PdfPage[] | null>(null);
+  const [, refreshFontMetrics] = useState(0);
   const ocrWorkerRef = useRef<any>(null);
   const busyRef = useRef(false);
   const mountedRef = useRef(true);
@@ -830,6 +831,18 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   }, [editingPageId, selectedAnnotationId]);
 
   const editingPage = editingPageId ? pages.find(p => p.uniqueId === editingPageId) : null;
+  const previewFonts = [...new Set((editingPage?.annotations || [])
+    .filter(a => a.type === 'text' && !a.isDeleted)
+    .map(a => cssPdfFont({ ...a, fontSize: 12 })))].sort().join('|');
+
+  useEffect(() => {
+    if (!previewFonts || !document.fonts) return;
+    let active = true;
+    void Promise.all(previewFonts.split('|').map(font => document.fonts.load(font, 'İıĞğŞşÖöÜüÇç')))
+      .then(() => { if (active) refreshFontMetrics(value => value + 1); })
+      .catch(() => { if (active) setEditorStatus('Yerel yazı tipi yüklenemedi; /fonts dosyalarını kontrol edin. Önizleme geçici olarak farklı görünebilir.'); });
+    return () => { active = false; };
+  }, [previewFonts]);
 
   // Auto-zoom and center editor view
   useEffect(() => {

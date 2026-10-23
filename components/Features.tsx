@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, X, Download, FileText, ArrowRight, Loader2, CheckCircle2, RotateCw, Trash2, Save, Plus, ScanText, FilePenLine, MousePointer2, Eraser, Type, ChevronLeft, ZoomIn, ZoomOut, Bold, Palette, Highlighter, Minus, Home, Sparkles, Percent, Hand, MousePointerClick, GitCompare, Stamp, QrCode, Grid, Type as TypeIcon, Copy, FileDiff } from 'lucide-react';
 import { FileWithPreview, CompressedResult, PdfPage, Annotation } from '../types';
-import { createPdfOcrWorker, exportEditedPdf, extractPdfText, mergeOcr, pdfTextChanged, recognizePdfPage } from '../services/pdfEditor';
+import { createPdfOcrWorker, exportEditedPdf, extractPdfText, mergeOcr, pdfCssFamily, pdfTextBaseline, pdfTextChanged, pdfTextWidth, recognizePdfPage } from '../services/pdfEditor';
 
 // --- Helper Components ---
 const SectionHeader: React.FC<{ title: string; description: string; onBack: () => void }> = ({ title, description, onBack }) => (
@@ -171,7 +171,7 @@ export const CompressorFeature: React.FC<{ initialFiles?: File[], onBack: () => 
             // @ts-ignore
             if (!window.pdfjsLib) throw new Error("PDF.js not loaded");
             // @ts-ignore
-            const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer, isEvalSupported: false }).promise;
             // @ts-ignore
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF();
@@ -658,7 +658,7 @@ export const PdfComparatorFeature: React.FC<{ initialFiles?: File[], onBack: () 
         // @ts-ignore
         if(!window.pdfjsLib) throw new Error("PDF.js not ready");
         // @ts-ignore
-        const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer, isEvalSupported: false }).promise;
         const page = await pdf.getPage(1);
         const viewport = page.getViewport({ scale: 1.5 });
         const canvas = document.createElement('canvas');
@@ -892,7 +892,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
       // @ts-ignore
       if(!window.pdfjsLib) throw new Error("PDF.js not loaded");
       // @ts-ignore
-      pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer, isEvalSupported: false }).promise;
       const newPages: PdfPage[] = [];
       const newFileIndex = sourceFiles.length;
 
@@ -906,7 +906,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
 
         await page.render({ canvasContext: context, viewport: viewport }).promise;
         const baseViewport = page.getViewport({ scale: 1 });
-        const annotations = await extractPdfText(page, canvas);
+        const annotations = await extractPdfText(page, canvas).catch(() => []);
         setEditorStatus(`Sayfa ${i}/${pdf.numPages}: ${annotations.length} yerel metin alanı bulundu.`);
         newPages.push({
           uniqueId: Math.random().toString(36).substr(2, 9),
@@ -999,6 +999,18 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   };
 
   // --- Pointer Event Handlers (Mouse + Touch) ---
+  const pointerPosition = (e: React.PointerEvent) => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    const angle = -(editingPage?.rotation || 0) * Math.PI / 180;
+    const dx = e.clientX - (rect.left + rect.width / 2);
+    const dy = e.clientY - (rect.top + rect.height / 2);
+    const scale = zoomLevel / 100;
+    const width = (editingPage?.previewWidth || imageRef.current?.naturalWidth || rect.width) * scale;
+    const height = (editingPage?.previewHeight || imageRef.current?.naturalHeight || rect.height) * scale;
+    return { x: ((dx * Math.cos(angle) - dy * Math.sin(angle)) / width + .5) * 100,
+      y: ((dx * Math.sin(angle) + dy * Math.cos(angle)) / height + .5) * 100 };
+  };
+
   const handlePointerDown = (e: React.PointerEvent) => {
     if (!editingPageId || !containerRef.current) return;
     
@@ -1025,8 +1037,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
 
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    const { x, y } = pointerPosition(e);
 
     if (activeTool === 'text') {
         const newAnnotation: Annotation = {
@@ -1034,13 +1045,15 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
             type: 'text',
             x, y, width: 20, height: 5,
             content: 'Metin',
-            fontSize: 24,
+            fontSize: 12,
             fontFamily: 'Helvetica',
             color: '#000000',
             isBold: false,
+            isItalic: false,
             backgroundColor: 'transparent'
         };
-        setPages(pages.map(p => 
+        setUndoPages(pages);
+        setPages(prev => prev.map(p =>
             p.uniqueId === editingPageId ? { ...p, annotations: [...p.annotations, newAnnotation] } : p
         ));
         setSelectedAnnotationId(newAnnotation.id);
@@ -1077,8 +1090,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
     if (draggingAnnotationId && dragStartOffset && canvasRef.current && editingPageId) {
         e.preventDefault();
         const rect = canvasRef.current.getBoundingClientRect();
-        const currentX = ((e.clientX - rect.left) / rect.width) * 100;
-        const currentY = ((e.clientY - rect.top) / rect.height) * 100;
+        const { x: currentX, y: currentY } = pointerPosition(e);
         
         updateAnnotation(editingPageId, draggingAnnotationId, {
             x: currentX - dragStartOffset.x,
@@ -1092,8 +1104,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
     e.preventDefault();
     
     const rect = canvasRef.current.getBoundingClientRect();
-    const currentX = ((e.clientX - rect.left) / rect.width) * 100;
-    const currentY = ((e.clientY - rect.top) / rect.height) * 100;
+    const { x: currentX, y: currentY } = pointerPosition(e);
 
     if (activeTool === 'line') {
          setTempAnnotation({
@@ -1148,6 +1159,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
 
   // --- Logic ---
   const updateAnnotation = (pageId: string, annotationId: string, updates: Partial<Annotation>) => {
+    if (!draggingAnnotationId) setUndoPages(pages);
     setPages(prev => prev.map(p => 
       p.uniqueId === pageId 
         ? { ...p, annotations: p.annotations.map(a => a.id === annotationId ? { ...a, ...updates } : a) }
@@ -1171,10 +1183,11 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
     setOcrProcessing(true);
     try {
       const targets = (Array.isArray(target) ? target : [target]).filter(p => !p.isDeleted);
+      if (!targets.length) return;
       let current = 0;
       const worker = await createPdfOcrWorker(message => {
         if (mountedRef.current) setEditorStatus(`OCR ${current + 1}/${targets.length}: ${message}`);
-      });
+      }, worker => { ocrWorkerRef.current = worker; });
       ocrWorkerRef.current = worker;
       if (!mountedRef.current) return;
       for (const page of targets) {
@@ -1280,6 +1293,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
 
                  {/* OCR & Back */}
                  <div className="pl-2 border-l border-slate-200/50 flex items-center space-x-2">
+                   <button disabled={!undoPages || ocrProcessing} onClick={() => { if (undoPages) setPages(undoPages); setUndoPages(null); }} className="text-xs px-2 disabled:opacity-40">Geri al</button>
                     <button 
                     onClick={() => setEditingPageId(null)} 
                     className="p-2 hover:bg-slate-100 rounded-xl text-slate-600 hover:text-slate-900 transition-colors"
@@ -1288,12 +1302,14 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                     </button>
                     <button 
                     onClick={() => runSmartOcr(editingPage)} 
-                    disabled={ocrProcessing}
+                    disabled={ocrProcessing || isProcessing}
                     className="bg-brand-600 text-white px-3 py-2 rounded-xl text-xs font-bold flex items-center space-x-2"
                     >
                     {ocrProcessing ? <Loader2 className="animate-spin" size={14} /> : <ScanText size={14} />}
                     <span>OCR</span>
                     </button>
+                    <button onClick={() => runSmartOcr(pages)} disabled={ocrProcessing || isProcessing} className="text-xs px-2 disabled:opacity-40">Tüm sayfalara OCR</button>
+                    <button onClick={handleSave} disabled={isSaving || ocrProcessing || isProcessing} className="text-xs px-2 disabled:opacity-40">{isSaving ? 'Kaydediliyor…' : 'Kaydet'}</button>
                  </div>
              </div>
              
@@ -1315,12 +1331,14 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                      <div className="flex items-center bg-slate-100/80 rounded-lg h-8 px-2">
                      <input 
                          type="number"
-                         value={Math.round(selectedAnnotation.fontSize || 24)}
-                         onChange={(e) => updateAnnotation(editingPage.uniqueId, selectedAnnotation.id, { fontSize: parseInt(e.target.value) })}
+                         min={1} max={300} aria-label="Yazı boyutu (pt)"
+                         value={Math.round(selectedAnnotation.fontSize || 12)}
+                         onChange={(e) => { const size = Number(e.target.value); if (Number.isFinite(size) && size >= 1 && size <= 300) updateAnnotation(editingPage.uniqueId, selectedAnnotation.id, { fontSize: size }); }}
                          className="w-8 bg-transparent border-none text-center text-xs font-bold focus:ring-0 p-0"
                      />
-                     <span className="text-[10px] text-slate-400 ml-1 font-bold">PX</span>
+                     <span className="text-[10px] text-slate-400 ml-1 font-bold">PT</span>
                      </div>
+                     {selectedAnnotation.source && <span className="text-[10px] text-slate-500 px-1">{selectedAnnotation.source.kind === 'native' ? `PDF: ${selectedAnnotation.source.fontName || 'font tahmini'}` : `OCR: yaklaşık font · güven %${Math.round(selectedAnnotation.source.confidence || 0)}`}</span>}
 
                      <button 
                      onClick={() => updateAnnotation(editingPage.uniqueId, selectedAnnotation.id, { isBold: !selectedAnnotation.isBold })}
@@ -1328,6 +1346,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                      >
                      <Bold size={14} />
                      </button>
+                     <button title="İtalik" onClick={() => updateAnnotation(editingPage.uniqueId, selectedAnnotation.id, { isItalic: !selectedAnnotation.isItalic })} className={`h-8 w-8 italic rounded-lg ${selectedAnnotation.isItalic ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>I</button>
 
                      <div className="relative group h-8 w-8 rounded-lg bg-slate-100 flex items-center justify-center overflow-hidden cursor-pointer shadow-inner border border-slate-200">
                      <div className="w-5 h-5 rounded-full border border-slate-200/50 shadow-sm" style={{ backgroundColor: selectedAnnotation.color || '#000000' }}></div>
@@ -1340,6 +1359,8 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                      </div>
                 </div>
              )}
+             <p role="status" className="text-[11px] text-slate-600 max-w-3xl px-2 pt-1 whitespace-normal">{editorStatus}</p>
+             <p className="text-[10px] text-slate-500 max-w-3xl px-2 whitespace-normal">Tarama fontları yaklaşık tahmin edilir. OCR aranabilir Unicode metinle kaydedilir; değişmeyen tarama görünümü korunur. Diğer metinler gerekirse görüntü olur (seçilemez). Karmaşık zeminlerde örtme izi kalabilir. Bu işlem güvenli sansür değildir.</p>
             </div>
         </div>
 
@@ -1391,7 +1412,8 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
               onPointerLeave={handlePointerUp}
               style={{ 
                 width: 'fit-content',
-                transform: `scale(${zoomLevel / 100})`,
+                transform: `scale(${zoomLevel / 100}) rotate(${editingPage.rotation}deg)`,
+                flexShrink: 0,
                 marginTop: zoomLevel > 100 ? `${(zoomLevel - 100) * 2}px` : '0',
                 touchAction: activeTool === 'hand' || (activeTool === 'cursor' && !draggingAnnotationId) ? 'auto' : 'none' 
               }}
@@ -1401,7 +1423,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                 src={editingPage.preview} 
                 alt="Page" 
                 className="max-w-none select-none pointer-events-none"
-                style={{ transform: `rotate(${editingPage.rotation}deg)` }}
+                style={{ display: 'block', width: editingPage.previewWidth, height: editingPage.previewHeight }}
                 draggable={false}
               />
               
@@ -1416,7 +1438,15 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                  ></div>
               )}
 
-              {editingPage.annotations.map(ann => {
+              {editingPage.annotations.filter(ann => ann.source && pdfTextChanged(ann)).map(ann => (
+                <div key={`mask-${ann.id}`} className="absolute pointer-events-none z-10" style={{
+                  left: `${ann.source!.x}%`, top: `${ann.source!.y}%`,
+                  width: `${ann.source!.width}%`, height: `${ann.source!.height}%`,
+                  backgroundColor: ann.source!.background,
+                  transform: `rotate(${ann.textAngle || 0}deg)`, transformOrigin: 'top left',
+                }} />
+              ))}
+              {editingPage.annotations.filter(ann => !ann.isDeleted).map(ann => {
                 const isSelected = selectedAnnotationId === ann.id;
                 
                 if (ann.type === 'line') {
@@ -1448,20 +1478,9 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                     )
                 }
                 
-                // --- Text Visibility Logic ---
-                // 1. Is it modified OCR text?
-                const isModifiedOcr = ann.originalContent && ann.content !== ann.originalContent;
-                // 2. Is it new manually added text? (No originalContent)
-                const isNewText = !ann.originalContent;
-                // 3. Should the text be visible (black/color)? 
-                //    Yes if selected OR modified OR it's new text. 
-                //    Only unmodified OCR text remains transparent (to show image).
-                const shouldShowText = isSelected || isModifiedOcr || isNewText;
-                
-                // 4. Should the background be white?
-                //    Yes if selected OR modified OCR (to mask image).
-                //    New text usually has transparent bg unless selected.
-                const shouldShowBackground = (ann.type === 'text' && (isSelected || isModifiedOcr));
+                const isModifiedOcr = ann.source && pdfTextChanged(ann);
+                const isNewText = !ann.source;
+                const shouldShowText = isModifiedOcr || isNewText;
 
                 return (
                   <div
@@ -1472,7 +1491,9 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                       top: `${ann.y}%`,
                       width: `${ann.width}%`,
                       height: `${ann.height}%`,
-                      backgroundColor: shouldShowBackground ? '#ffffff' : (ann.type === 'erase' ? 'white' : (ann.type === 'highlight' ? ann.color : (ann.backgroundColor || 'transparent'))),
+                      backgroundColor: ann.type === 'erase' ? 'white' : (ann.type === 'highlight' ? ann.color : (ann.backgroundColor || 'transparent')),
+                      transform: ann.type === 'text' ? `rotate(${ann.textAngle || 0}deg)` : undefined,
+                      transformOrigin: 'top left',
                       opacity: ann.type === 'highlight' ? (ann.opacity || 0.4) : (ann.opacity || 1),
                       mixBlendMode: ann.type === 'highlight' ? 'multiply' : 'normal',
                       transition: draggingAnnotationId === ann.id ? 'none' : 'background-color 0.2s',
@@ -1483,10 +1504,11 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                           if (ann.type !== 'text') e.preventDefault();
                           
                           setSelectedAnnotationId(ann.id);
+                          setUndoPages(pages);
                           const rect = canvasRef.current?.getBoundingClientRect();
                           if(rect) {
-                             const clientX = ((e.clientX - rect.left) / rect.width) * 100;
-                             const clientY = ((e.clientY - rect.top) / rect.height) * 100;
+                             const { x: clientX, y: clientY } = pointerPosition(e);
+                             e.currentTarget.setPointerCapture(e.pointerId);
                              setDraggingAnnotationId(ann.id);
                              setDragStartOffset({ x: clientX - ann.x, y: clientY - ann.y });
                           }
@@ -1510,6 +1532,9 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                     {ann.type === 'text' && (
                       <div className="relative w-full h-full group pointer-events-auto">
                          {isSelected && (
+                           <button title="Metni taşı" className="absolute -top-5 left-0 bg-white text-slate-700 text-[10px] z-30">Taşı</button>
+                         )}
+                         {isSelected && (
                            <button 
                               onPointerDown={(e) => { e.stopPropagation(); deleteAnnotation(editingPage.uniqueId, ann.id); }}
                               className="absolute -top-3 -right-3 bg-red-500 text-white rounded-full p-1 z-30 shadow-sm transition-transform"
@@ -1519,20 +1544,28 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                          )}
                          <textarea
                             value={ann.content}
+                            aria-label={ann.source ? 'PDF metnini düzenle' : 'Yeni metin'}
+                            wrap="off"
+                            onPointerDown={e => { e.stopPropagation(); setSelectedAnnotationId(ann.id); }}
+                            onFocus={() => setUndoPages(pages)}
                             onChange={(e) => updateAnnotation(editingPage.uniqueId, ann.id, { content: e.target.value })}
-                            className={`w-full h-full resize-none focus:outline-none p-0 m-0 border-none overflow-hidden whitespace-pre-wrap leading-tight selection:bg-brand-200 ${!isSelected && ann.isInteractive ? 'text-transparent selection:text-transparent cursor-text' : ''}`}
+                            className="absolute left-0 w-full resize-none focus:outline-none p-0 m-0 border-none overflow-hidden selection:bg-brand-200 cursor-text"
                             style={{ 
-                              fontSize: ann.fontSize ? `${ann.fontSize}px` : '14px',
-                              fontFamily: ann.fontFamily === 'Times New Roman' ? 'Times New Roman, serif' : 
-                                          ann.fontFamily === 'Courier' ? 'Courier New, monospace' : 
-                                          'Helvetica, Arial, sans-serif',
+                             fontSize: `${(ann.fontSize || 12) * (editingPage.previewWidth || imageRef.current?.naturalWidth || 1) / (editingPage.viewport?.width || 1)}px`,
+                             width: `${Math.max(ann.width / 100 * (editingPage.previewWidth || 1), pdfTextWidth(ann) * (editingPage.previewWidth || 1) / (editingPage.viewport?.width || 1))}px`,
+                             top: `${((ann.source ? (ann.source.baselineOffset ?? (ann.source.baseline - ann.source.y) / 100 * (editingPage.viewport?.height || 1)) : (ann.fontSize || 12) * .8) - pdfTextBaseline(ann)) * (editingPage.previewWidth || 1) / (editingPage.viewport?.width || 1)}px`,
+                             height: `${Math.max(ann.height / 100 * (editingPage.previewHeight || 1), (ann.content?.split('\n').length || 1) * (ann.fontSize || 12) * (editingPage.previewWidth || 1) / (editingPage.viewport?.width || 1) * 1.2)}px`,
+                              fontFamily: pdfCssFamily(ann),
                               color: shouldShowText ? (ann.color || '#000000') : 'transparent',
                               fontWeight: ann.isBold ? 'bold' : 'normal',
+                              fontStyle: ann.isItalic ? 'italic' : 'normal',
+                              caretColor: ann.color || '#000000',
+                              pointerEvents: activeTool === 'cursor' ? 'auto' : 'none',
                               backgroundColor: 'transparent',
-                              lineHeight: 1.1,
+                              lineHeight: 1.2,
                             }}
                             spellCheck={false}
-                            disabled={!isSelected && activeTool !== 'cursor'}
+                            disabled={activeTool !== 'cursor'}
                          />
                       </div>
                     )}
@@ -1549,16 +1582,19 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   return (
     <div className="max-w-full mx-auto flex flex-col p-4 md:p-8 animate-fade-in w-full md:px-12">
        <SectionHeader title="Editör+" description="PDF belgelerinizi düzenleyin, imzalayın." onBack={onBack} />
+       <p role="status" className="text-sm text-slate-600 mb-2">{isProcessing ? 'PDF okunuyor… ' : ''}{editorStatus}</p>
+       <p className="text-xs text-slate-500 mb-4">Yerel PDF metni otomatik alınır; taramalar Türkçe + İngilizce OCR ile açılır ve aranabilir Unicode metinle kaydedilir. Font/zemin tahminleri birebir olmayabilir. Değişmeyen alanlar korunur. OCR dışındaki metinlerde görüntü yedeği kullanılabilir (seçilemez). Örtme güvenli sansür değildir.</p>
 
        <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-8 shrink-0 space-y-4 md:space-y-0">
           <div className="flex space-x-3 w-full">
-             <button onClick={() => fileInputRef.current?.click()} className="flex-1 md:flex-none flex items-center justify-center bg-white border border-slate-200 text-slate-700 px-6 py-3 rounded-2xl font-bold hover:bg-slate-50 transition-colors shadow-sm hover:shadow-md">
+             <button disabled={isProcessing || ocrProcessing || isSaving} onClick={() => fileInputRef.current?.click()} className="flex-1 md:flex-none flex items-center justify-center bg-white border border-slate-200 text-slate-700 px-6 py-3 rounded-2xl font-bold hover:bg-slate-50 transition-colors shadow-sm hover:shadow-md">
                 <Plus size={20} className="mr-2" /> Sayfa Ekle
              </button>
              <div className="hidden md:block flex-1"></div>
+             <button disabled={!pages.length || isProcessing || ocrProcessing || isSaving} onClick={() => runSmartOcr(pages)} className="text-sm px-3 disabled:opacity-40">Tüm sayfalara OCR</button>
              <button 
                 onClick={handleSave} 
-                disabled={pages.length === 0 || isSaving}
+                disabled={!pages.some(p => !p.isDeleted) || isSaving || isProcessing || ocrProcessing}
                 className="flex-1 md:flex-none flex items-center justify-center bg-brand-600 text-white px-10 py-4 rounded-2xl font-bold hover:bg-brand-700 transition-all shadow-xl shadow-brand-500/30 disabled:opacity-50 transform active:scale-95"
              >
                 {isSaving ? <Loader2 className="animate-spin mr-2" size={20} /> : <Save size={20} className="mr-2" />}
@@ -1568,7 +1604,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
           <input 
              type="file" 
              ref={fileInputRef} 
-             onChange={(e) => { if(e.target.files && e.target.files.length > 0) handleInitialUpload(e.target.files) }} 
+             onChange={(e) => { if(e.target.files && e.target.files.length > 0) handleInitialUpload(e.target.files); e.target.value = ''; }}
              className="hidden" 
              accept=".pdf" 
              multiple 

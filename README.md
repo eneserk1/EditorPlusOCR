@@ -8,6 +8,7 @@ BelgeEditor+, PDF metinlerini düzenlemek, taranmış belgelerdeki metinleri OCR
 
 - Metin içeren PDF'lerde mevcut metinler konum ve yazı özellikleriyle algılanır.
 - Taranmış sayfalarda Türkçe ve İngilizce OCR ile düzenlenebilir metin alanları oluşturulur.
+- OCR yapılan taramalara görünümü değiştirmeden aranabilir ve seçilebilir metin katmanı eklenir.
 - Metin, yazı tipi, boyut ve renk değişiklikleri; sayfa döndürme, işaretleme ve QR kod araçları sunulur.
 - Değiştirilmeyen içerik özgün PDF üzerinde korunur.
 

@@ -49,6 +49,7 @@ export interface Annotation {
     fontName?: string;
     confidence?: number;
     baseline: number; // Percentage from preview top
+    baselineOffset?: number; // Distance from top edge to baseline, in PDF points
     x: number;
     y: number;
     width: number;

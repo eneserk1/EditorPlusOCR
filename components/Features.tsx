@@ -774,6 +774,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   const [zoomLevel, setZoomLevel] = useState(100);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [textSelection, setTextSelection] = useState({ id: '', start: 0, end: 0 });
+  const sourceSelectionAnchor = useRef<{ id: string; pointerId: number; index: number } | null>(null);
   
   // Modal States
   const [showQrModal, setShowQrModal] = useState(false);
@@ -1597,6 +1598,18 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                 
                 const shouldShowText = textChanged(ann);
                 const layout = ann.type === 'text' ? textLayout(ann, editingPage) : null;
+                const sourceCaretAt = (clientX: number, clientY: number) => {
+                  if (!layout?.outlines || !canvasRef.current) return 0;
+                  const rect = canvasRef.current.getBoundingClientRect();
+                  const angle = (ann.rotation || 0) * Math.PI / 180;
+                  const scale = zoomLevel / 100;
+                  const dx = (clientX - rect.left) / scale - ann.x / 100 * (editingPage.previewWidth || 1);
+                  const dy = (clientY - rect.top) / scale - ann.y / 100 * (editingPage.previewHeight || 1);
+                  const x = (dx * Math.cos(angle) + dy * Math.sin(angle)) / layout.scaleX;
+                  const y = -dx * Math.sin(angle) + dy * Math.cos(angle) - layout.baseline + layout.size * 0.4;
+                  return layout.outlines.carets.reduce((best, caret, index, all) =>
+                    Math.abs(caret.x - x) + Math.abs(caret.y - y) * 4 < Math.abs(all[best].x - x) + Math.abs(all[best].y - y) * 4 ? index : best, 0);
+                };
 
                 return (
                   <div
@@ -1702,23 +1715,33 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                               if (activeTool !== 'cursor') return;
                               e.stopPropagation();
                               setSelectedAnnotationId(ann.id);
+                              if (!layout!.outlines || e.pointerType === 'touch' || e.button !== 0) return;
+                              e.preventDefault();
+                              const textarea = e.currentTarget;
+                              const focus = sourceCaretAt(e.clientX, e.clientY);
+                              const anchor = e.shiftKey
+                                ? textarea.selectionDirection === 'backward' ? textarea.selectionEnd : textarea.selectionStart
+                                : focus;
+                              sourceSelectionAnchor.current = { id: ann.id, pointerId: e.pointerId, index: anchor };
+                              textarea.focus({ preventScroll: true });
+                              textarea.setPointerCapture(e.pointerId);
+                              textarea.setSelectionRange(Math.min(anchor, focus), Math.max(anchor, focus), focus < anchor ? 'backward' : 'forward');
+                              setTextSelection({ id: ann.id, start: textarea.selectionStart, end: textarea.selectionEnd });
                             }}
                             onChange={(e) => updateAnnotation(editingPage.uniqueId, ann.id, { content: e.target.value })}
                             onSelect={e => setTextSelection({ id: ann.id, start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd })}
-                            onClick={e => {
-                              if (!layout!.outlines) return;
-                              if (!e.shiftKey && e.currentTarget.selectionStart !== e.currentTarget.selectionEnd) return;
-                              const rect = canvasRef.current!.getBoundingClientRect();
-                              const angle = (ann.rotation || 0) * Math.PI / 180;
-                              const scale = zoomLevel / 100;
-                              const dx = (e.clientX - rect.left) / scale - ann.x / 100 * (editingPage.previewWidth || 1);
-                              const dy = (e.clientY - rect.top) / scale - ann.y / 100 * (editingPage.previewHeight || 1);
-                              const x = (dx * Math.cos(angle) + dy * Math.sin(angle)) / layout!.scaleX;
-                              const y = -dx * Math.sin(angle) + dy * Math.cos(angle) - layout!.baseline + layout!.size * 0.4;
-                              const nearest = layout!.outlines.carets.reduce((best, caret, index, all) =>
-                                Math.abs(caret.x - x) + Math.abs(caret.y - y) * 4 < Math.abs(all[best].x - x) + Math.abs(all[best].y - y) * 4 ? index : best, 0);
-                              e.currentTarget.setSelectionRange(e.shiftKey ? e.currentTarget.selectionStart : nearest, nearest);
+                            onPointerUp={e => {
+                              const anchor = sourceSelectionAnchor.current;
+                              if (!layout!.outlines || anchor?.id !== ann.id || anchor.pointerId !== e.pointerId) return;
+                              e.stopPropagation();
+                              const focus = sourceCaretAt(e.clientX, e.clientY);
+                              e.currentTarget.setSelectionRange(Math.min(anchor.index, focus), Math.max(anchor.index, focus), focus < anchor.index ? 'backward' : 'forward');
                               setTextSelection({ id: ann.id, start: e.currentTarget.selectionStart, end: e.currentTarget.selectionEnd });
+                              sourceSelectionAnchor.current = null;
+                              if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+                            }}
+                            onLostPointerCapture={e => {
+                              if (sourceSelectionAnchor.current?.pointerId === e.pointerId) sourceSelectionAnchor.current = null;
                             }}
                             className={`w-full h-full resize-none focus:outline-none p-0 m-0 border-none overflow-hidden whitespace-pre-wrap leading-tight ${layout!.outlines ? 'selection:bg-transparent' : 'selection:bg-brand-200'} ${!isSelected && ann.isInteractive ? 'text-transparent selection:text-transparent cursor-text' : ''}`}
                             style={{ 

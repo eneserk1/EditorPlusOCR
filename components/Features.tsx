@@ -1,7 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { Upload, X, Download, FileText, ArrowRight, Loader2, CheckCircle2, RotateCw, Trash2, Save, Plus, ScanText, FilePenLine, MousePointer2, Eraser, Type, ChevronLeft, ZoomIn, ZoomOut, Bold, Palette, Highlighter, Minus, Home, Sparkles, Percent, Hand, MousePointerClick, GitCompare, Stamp, QrCode, Grid, Type as TypeIcon, Copy, FileDiff } from 'lucide-react';
 import { FileWithPreview, CompressedResult, PdfPage, Annotation } from '../types';
-import { drawPageEdits, editingFontName, extractNativeText, ocrAnnotations, originalMaskBounds, overlapsOriginal, prepareBrowserFont, textareaBaselineOffset, textChanged } from '../services/pdfEditing';
+import { drawPageEdits, editingFontName, extractNativeText, ocrAnnotations, originalMaskBounds, overlapsOriginal, prepareBrowserFont, textFontStyle, textLayout, textChanged } from '../services/pdfEditing';
 
 // --- Helper Components ---
 const SectionHeader: React.FC<{ title: string; description: string; onBack: () => void }> = ({ title, description, onBack }) => (
@@ -784,7 +784,6 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   const [isDrawing, setIsDrawing] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [startCoords, setStartCoords] = useState<{x: number, y: number} | null>(null);
-  const [panStart, setPanStart] = useState<{x: number, y: number} | null>(null);
   const [tempAnnotation, setTempAnnotation] = useState<Annotation | null>(null);
   
   // Dragging Annotation State
@@ -795,6 +794,11 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   const canvasRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
+  const previousZoom = useRef(100);
+  const panOrigin = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const textInsertRequest = useRef(0);
+  const editorContext = useRef({ pageId: editingPageId, tool: activeTool });
+  editorContext.current = { pageId: editingPageId, tool: activeTool };
 
   // Initialize
   useEffect(() => {
@@ -831,7 +835,21 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
     return () => { cancelled = true; };
   }, [editingPage?.annotations, selectedAnnotationId]);
 
-  // Auto-zoom and center editor view
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (container && editingPage) {
+      const oldScale = previousZoom.current / 100, scale = zoomLevel / 100;
+      const width = editingPage.previewWidth || 1, height = editingPage.previewHeight || 1;
+      const center = (length: number, viewport: number, scroll: number) =>
+        (scroll + viewport / 2 - Math.max(24, (viewport - length * oldScale) / 2)) / oldScale * scale +
+        Math.max(24, (viewport - length * scale) / 2) - viewport / 2;
+      container.scrollLeft = center(width, container.clientWidth, container.scrollLeft);
+      container.scrollTop = center(height, container.clientHeight, container.scrollTop);
+    }
+    previousZoom.current = zoomLevel;
+  }, [zoomLevel]);
+
+  // Fit on opening/resizing; the stage itself supplies the scrollable extents.
   useEffect(() => {
     if (!editingPageId || !containerRef.current || !imageRef.current) {
         return;
@@ -842,7 +860,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
 
     const setZoomAndPosition = () => {
         // Add some padding to not stick to the edges
-        const PADDING = 64;
+        const PADDING = 48;
         const containerWidth = container.clientWidth - PADDING;
         const containerHeight = container.clientHeight - PADDING;
 
@@ -853,19 +871,8 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
             const scaleX = containerWidth / imageWidth;
             const scaleY = containerHeight / imageHeight;
             const newZoom = Math.min(scaleX, scaleY) * 100;
-            setZoomLevel(Math.floor(newZoom < 20 ? 20 : newZoom));
+            setZoomLevel(Math.max(20, Math.min(400, Math.floor(newZoom))));
         }
-
-        // After setting zoom, scroll to center
-        setTimeout(() => {
-            if (canvasRef.current) {
-                canvasRef.current.scrollIntoView({
-                    behavior: 'auto',
-                    block: 'center',
-                    inline: 'center'
-                });
-            }
-        }, 50);
     };
 
     if (image.complete) {
@@ -874,7 +881,16 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
         image.addEventListener('load', setZoomAndPosition, { once: true });
     }
 
+    let viewportWidth = window.innerWidth, viewportHeight = window.innerHeight;
+    const observer = new ResizeObserver(() => {
+      if (viewportWidth === window.innerWidth && viewportHeight === window.innerHeight) return;
+      viewportWidth = window.innerWidth;
+      viewportHeight = window.innerHeight;
+      setZoomAndPosition();
+    });
+    observer.observe(container, { box: 'border-box' });
     return () => {
+        observer.disconnect();
         image.removeEventListener('load', setZoomAndPosition);
     };
   }, [editingPageId, editingPage?.rotation]);
@@ -889,7 +905,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
       // @ts-ignore
       if(!window.pdfjsLib) throw new Error("PDF.js not loaded");
       // @ts-ignore
-      const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer, isEvalSupported: false }).promise;
+      const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer, isEvalSupported: false, fontExtraProperties: true }).promise;
       const newPages: PdfPage[] = [];
       const newFileIndex = sourceFileCount.current;
 
@@ -1002,19 +1018,17 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
   };
 
   // --- Pointer Event Handlers (Mouse + Touch) ---
-  const handlePointerDown = (e: React.PointerEvent) => {
+  const handlePointerDown = async (e: React.PointerEvent) => {
     if (!editingPageId || !containerRef.current) return;
     
-    // Allow touch scrolling when Hand tool is NOT selected and NOT drawing
-    if (activeTool !== 'hand' && activeTool === 'cursor' && !isDrawing) {
-        // Let the browser handle scrolling if we hit background
-    }
-
     // Pan Logic
     if (activeTool === 'hand') {
+        if (e.pointerType === 'touch') return;
+        if (e.button !== 0) return;
         e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        panOrigin.current = { x: e.clientX, y: e.clientY, left: containerRef.current.scrollLeft, top: containerRef.current.scrollTop };
         setIsPanning(true);
-        setPanStart({ x: e.clientX, y: e.clientY });
         return;
     }
 
@@ -1032,18 +1046,47 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
     const y = ((e.clientY - rect.top) / rect.height) * 100;
 
     if (activeTool === 'text') {
+        const request = ++textInsertRequest.current;
+        const page = editingPage!;
+        const candidates = page.annotations.filter(a => a.type === 'text' && !a.isDeleted);
+        const inherited = candidates.find(a => a.id === selectedAnnotationId) || candidates.reduce<Annotation | undefined>((nearest, a) => {
+            const distance = (ann: Annotation) => {
+                const dx = Math.max(ann.x - x, 0, x - ann.x - ann.width) * (page.previewWidth || 1);
+                const dy = Math.max(ann.y - y, 0, y - ann.y - ann.height) * (page.previewHeight || 1);
+                return dx * dx + dy * dy;
+            };
+            return !nearest || distance(a) < distance(nearest) ? a : nearest;
+        }, undefined);
         const newAnnotation: Annotation = {
             id: Math.random().toString(36).substr(2, 9),
             type: 'text',
-            x, y, width: 20, height: 5,
+            x, y, width: 1, height: 1,
             content: 'Metin',
-            fontSize: 24,
-            fontFamily: 'Helvetica',
-            color: '#000000',
-            isBold: false,
+            fontSize: inherited?.fontSize || 12 * (page.previewHeight || 2) / (page.displayHeight || 1),
+            fontFamily: inherited?.fontFamily || 'Helvetica',
+            color: inherited?.color || '#000000',
+            isBold: inherited?.isBold || false,
+            isItalic: inherited?.isItalic || false,
+            sourceFont: inherited?.sourceFont,
+            rotation: inherited?.rotation,
             backgroundColor: 'transparent'
         };
-        setPages(pages.map(p => 
+        try {
+            const reference = inherited ? { ...inherited, content: newAnnotation.content } : newAnnotation;
+            await prepareBrowserFont(reference);
+            if (request !== textInsertRequest.current || editorContext.current.pageId !== page.uniqueId || editorContext.current.tool !== 'text') return;
+            if (inherited) {
+                const layout = textLayout(reference, page);
+                newAnnotation.textStyle = layout.calibration;
+                newAnnotation.baseline = layout.baseline;
+            }
+        } catch {
+            if (request === textInsertRequest.current && editorContext.current.pageId === page.uniqueId) {
+                setDetectionStatus('Yazı tipi yüklenemedi; metin eklemek için internet bağlantınızı kontrol edin.');
+            }
+            return;
+        }
+        setPages(prev => prev.map(p =>
             p.uniqueId === editingPageId ? { ...p, annotations: [...p.annotations, newAnnotation] } : p
         ));
         setSelectedAnnotationId(newAnnotation.id);
@@ -1052,6 +1095,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
     }
 
     setIsDrawing(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
     setStartCoords({ x, y });
     setTempAnnotation({
         id: 'temp',
@@ -1066,13 +1110,11 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
 
   const handlePointerMove = (e: React.PointerEvent) => {
     // Panning
-    if (isPanning && panStart && containerRef.current) {
+    if (isPanning && panOrigin.current && containerRef.current) {
         e.preventDefault();
-        const dx = e.clientX - panStart.x;
-        const dy = e.clientY - panStart.y;
-        containerRef.current.scrollLeft -= dx;
-        containerRef.current.scrollTop -= dy;
-        setPanStart({ x: e.clientX, y: e.clientY });
+        const origin = panOrigin.current;
+        containerRef.current.scrollLeft = origin.left - (e.clientX - origin.x);
+        containerRef.current.scrollTop = origin.top - (e.clientY - origin.y);
         return;
     }
 
@@ -1117,10 +1159,11 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
     }
   };
 
-  const handlePointerUp = () => {
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
     if (isPanning) {
         setIsPanning(false);
-        setPanStart(null);
+        panOrigin.current = null;
         return;
     }
     if (draggingAnnotationId) {
@@ -1139,11 +1182,22 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
             ...tempAnnotation,
             id: Math.random().toString(36).substr(2, 9)
         };
+
         setPages(pages.map(p => 
             p.uniqueId === editingPageId ? { ...p, annotations: [...p.annotations, finalAnnotation] } : p
         ));
     }
 
+    setIsDrawing(false);
+    setTempAnnotation(null);
+    setStartCoords(null);
+  };
+
+  const cancelPointer = () => {
+    setIsPanning(false);
+    panOrigin.current = null;
+    setDraggingAnnotationId(null);
+    setDragStartOffset(null);
     setIsDrawing(false);
     setTempAnnotation(null);
     setStartCoords(null);
@@ -1156,7 +1210,12 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
         ? { ...p, annotations: p.annotations.map(a => {
             if (a.id !== annotationId) return a;
             const next = { ...a, ...updates };
-            if (updates.fontSize && a.fontSize) next.baseline = (a.baseline ?? a.fontSize * 0.8) * updates.fontSize / a.fontSize;
+            if (updates.fontFamily !== undefined || updates.fontSize !== undefined || updates.isBold !== undefined || updates.isItalic !== undefined) {
+              next.sourceFont = undefined;
+              next.textStyle = undefined;
+              next.useSourceMetrics = false;
+              next.baseline = (next.fontSize || 24) * 0.8;
+            }
             return next;
           }) }
         : p
@@ -1279,7 +1338,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
     return (
       <div className="fixed inset-0 z-[100] bg-slate-900 flex flex-col overflow-hidden animate-in fade-in duration-300">
         {/* Modern Glass Toolbar - Scrollable on Mobile */}
-        <div className="absolute top-4 left-0 right-0 z-50 px-2 flex justify-center pointer-events-none">
+        <div className="relative z-50 px-2 py-2 flex justify-center pointer-events-none shrink-0">
             <div className="bg-white/95 backdrop-blur-2xl rounded-2xl shadow-2xl border border-white/20 p-2 flex flex-col items-start md:items-center animate-in slide-in-from-top-4 ring-1 ring-black/10 max-w-full md:max-w-fit overflow-x-auto pointer-events-auto">
              
              <div className="flex w-full min-w-max space-x-2">
@@ -1408,7 +1467,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
              )}
              <p role="status" aria-live="polite" className="text-[10px] text-slate-500 max-w-xl mt-1 whitespace-normal">
                {detectionStatus || 'Özgün görüntü korunur. Metne tıklayın; taşımak için seçili kutunun ok simgesini sürükleyin.'}
-               {' '}Düzenlenen metin Noto ile eşleştirilir; karmaşık arka planlar tam onarılamaz. Silme görsel kapatmadır, güvenli sansür değildir.
+               {' '}Yazı tipi mümkünse korunur, aksi halde kaynak ölçülerine eşleştirilir; karmaşık arka planlar tam onarılamaz. Silme görsel kapatmadır, güvenli sansür değildir.
                {editingPage.rotation !== 0 && ` Ek ${editingPage.rotation}° sayfa dönüşü kaydetmede uygulanır; düzenleme kaynak yönündedir.`}
              </p>
             </div>
@@ -1444,26 +1503,28 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
         {/* Canvas Area */}
         <div 
             ref={containerRef}
-            className="flex-1 bg-slate-900 overflow-auto flex items-center justify-center relative cursor-crosshair no-scrollbar touch-pan-x touch-pan-y pt-32 pb-32"
+            className="flex-1 min-h-0 min-w-0 bg-slate-900 overflow-auto relative"
+            style={{ touchAction: 'auto', overflowAnchor: 'none' }}
         >
-           {/* Zoom Controls Overlay */}
-           <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 flex items-center bg-slate-800/80 backdrop-blur rounded-full p-1.5 shadow-xl border border-white/10 z-[60]">
-                <button onClick={() => setZoomLevel(z => Math.max(z - 10, 20))} className="p-2 hover:bg-white/10 rounded-full text-white transition-colors"><ZoomOut size={18} /></button>
-                <span className="text-xs font-mono font-bold text-white w-10 text-center select-none">{zoomLevel}%</span>
-                <button onClick={() => setZoomLevel(z => Math.min(z + 10, 400))} className="p-2 hover:bg-white/10 rounded-full text-white transition-colors"><ZoomIn size={18} /></button>
-           </div>
-
+           <div style={{
+             width: (editingPage.previewWidth || 1) * zoomLevel / 100 + 48,
+             height: (editingPage.previewHeight || 1) * zoomLevel / 100 + 48,
+             minWidth: '100%', minHeight: '100%', padding: 24,
+             display: 'grid', placeItems: 'center', boxSizing: 'border-box',
+           }}>
+           <div style={{ position: 'relative', width: (editingPage.previewWidth || 1) * zoomLevel / 100, height: (editingPage.previewHeight || 1) * zoomLevel / 100, overflow: 'hidden' }}>
            <div 
               ref={canvasRef} 
-              className={`relative shadow-[0_0_50px_rgba(0,0,0,0.5)] transition-transform duration-75 ease-out bg-white origin-center ring-1 ring-white/10 ${isPanning ? 'cursor-grabbing' : (activeTool === 'hand' ? 'cursor-grab' : '')}`} 
+              className={`absolute top-0 left-0 bg-white origin-top-left ring-1 ring-white/10 ${isPanning ? 'cursor-grabbing' : (activeTool === 'hand' ? 'cursor-grab' : '')}`}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
-              onPointerLeave={handlePointerUp}
+              onPointerCancel={cancelPointer}
+              onLostPointerCapture={cancelPointer}
               style={{ 
-                width: 'fit-content',
+                width: editingPage.previewWidth,
+                height: editingPage.previewHeight,
                 transform: `scale(${zoomLevel / 100})`,
-                marginTop: zoomLevel > 100 ? `${(zoomLevel - 100) * 2}px` : '0',
                 touchAction: activeTool === 'hand' || (activeTool === 'cursor' && !draggingAnnotationId) ? 'auto' : 'none' 
               }}
            >
@@ -1529,6 +1590,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                 }
                 
                 const shouldShowText = textChanged(ann);
+                const layout = ann.type === 'text' ? textLayout(ann, editingPage) : null;
 
                 return (
                   <div
@@ -1537,8 +1599,8 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                     style={{
                       left: `${ann.x}%`,
                       top: `${ann.y}%`,
-                      width: `${ann.width}%`,
-                      height: `${ann.height}%`,
+                      width: layout && (isSelected || shouldShowText) ? layout.width : `${ann.width}%`,
+                      height: layout && (isSelected || shouldShowText) ? layout.height : `${ann.height}%`,
                       backgroundColor: ann.type === 'erase' ? 'white' : (ann.type === 'highlight' ? ann.color : (ann.textBackgroundColor || ann.backgroundColor || 'transparent')),
                       opacity: ann.type === 'highlight' ? (ann.opacity || 0.4) : (ann.opacity || 1),
                       mixBlendMode: ann.type === 'highlight' ? 'multiply' : 'normal',
@@ -1549,6 +1611,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                     onPointerDown={(e) => {
                        if (activeTool === 'cursor') {
                           e.stopPropagation();
+                          if (e.pointerType === 'touch') return;
                           e.preventDefault();
                           e.currentTarget.setPointerCapture(e.pointerId);
                           
@@ -1595,13 +1658,14 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                          )}
                          {shouldShowText && (
                            <svg className="absolute inset-0 pointer-events-none" width="100%" height="100%" style={{ overflow: 'visible' }}>
-                             <text x="0" y={ann.baseline ?? (ann.fontSize || 24) * 0.8}
-                               fill={ann.color || '#000000'} fontSize={ann.fontSize || 24}
-                               fontStyle={ann.fontFamily === 'Courier' && ann.isItalic ? 'italic' : 'normal'}
+                             <text x="0" y={layout!.baseline}
+                               transform={`scale(${layout!.scaleX} 1)`}
+                               fill={ann.color || '#000000'} fontSize={layout!.size}
+                               fontStyle={textFontStyle(ann)}
                                fontFamily={`${editingFontName(ann)}, ${ann.fontFamily === 'Courier' ? 'monospace' : ann.fontFamily === 'Times New Roman' ? 'serif' : 'sans-serif'}`}
                                style={{ whiteSpace: 'pre' }}>
                                {(ann.content || '').replace(/\r/g, '').split('\n').map((line, index) =>
-                                 <tspan key={index} x="0" dy={index ? (ann.fontSize || 24) * 1.2 : 0}>{line}</tspan>
+                                 <tspan key={index} x="0" dy={index ? layout!.size * 1.2 : 0}>{line}</tspan>
                                )}
                              </text>
                            </svg>
@@ -1618,11 +1682,15 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                             onChange={(e) => updateAnnotation(editingPage.uniqueId, ann.id, { content: e.target.value })}
                             className={`w-full h-full resize-none focus:outline-none p-0 m-0 border-none overflow-hidden whitespace-pre-wrap leading-tight selection:bg-brand-200 ${!isSelected && ann.isInteractive ? 'text-transparent selection:text-transparent cursor-text' : ''}`}
                             style={{ 
-                              fontSize: ann.fontSize ? `${ann.fontSize}px` : '14px',
+                              fontSize: layout!.size,
                               fontFamily: editingFontName(ann),
-                              fontStyle: ann.fontFamily === 'Courier' && ann.isItalic ? 'italic' : 'normal',
+                              fontStyle: textFontStyle(ann),
                               color: 'transparent',
-                              position: 'absolute', top: textareaBaselineOffset(ann),
+                              position: 'absolute', top: layout!.baselineOffset,
+                              width: layout!.width / layout!.scaleX,
+                              height: layout!.height + Math.abs(layout!.baselineOffset),
+                              transform: `scaleX(${layout!.scaleX})`, transformOrigin: 'top left',
+                              pointerEvents: activeTool === 'cursor' ? 'auto' : 'none',
                               caretColor: ann.color || '#000000',
                               padding: 0, margin: 0, border: 0, borderRadius: 0,
                               boxShadow: 'none', boxSizing: 'border-box',
@@ -1630,7 +1698,7 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                               lineHeight: 1.2,
                             }}
                             spellCheck={false}
-                            disabled={!isSelected && activeTool !== 'cursor'}
+                            disabled={activeTool !== 'cursor'}
                          />
                       </div>
                     )}
@@ -1638,6 +1706,15 @@ export const PdfEditorFeature: React.FC<{ initialFiles?: File[], onBack: () => v
                 );
               })}
            </div>
+           </div>
+           </div>
+        </div>
+        <div className="shrink-0 flex justify-center py-2 bg-slate-900 z-[60]">
+          <div className="flex items-center bg-slate-800 rounded-full p-1.5 shadow-xl border border-white/10">
+            <button aria-label="Uzaklaştır" onClick={() => setZoomLevel(z => Math.max(z - 10, 20))} className="p-2 hover:bg-white/10 rounded-full text-white"><ZoomOut size={18} /></button>
+            <span className="text-xs font-mono font-bold text-white w-10 text-center select-none">{zoomLevel}%</span>
+            <button aria-label="Yakınlaştır" onClick={() => setZoomLevel(z => Math.min(z + 10, 400))} className="p-2 hover:bg-white/10 rounded-full text-white"><ZoomIn size={18} /></button>
+          </div>
         </div>
       </div>
     );

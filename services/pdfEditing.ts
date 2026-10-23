@@ -37,6 +37,47 @@ const familyFor = (name: string): Annotation['fontFamily'] =>
   /mono|courier|console/i.test(name) ? 'Courier' :
   /serif|times|georgia|cambria/i.test(name) && !/sans/i.test(name) ? 'Times New Roman' : 'Helvetica';
 
+const sourceFonts = new Map<string, { bytes: Uint8Array; characters: Set<number> }>();
+let sourceFontId = 0;
+
+function retainSourceFont(info: any) {
+  if (!info?.data || !info.toUnicode || !(window as any).fontkit) return undefined;
+  // PDF subset fonts often use remapped glyph codes, not Unicode. Only reuse
+  // actual Unicode cmap entries whose PDF mapping is identical.
+  try {
+    const bytes = new Uint8Array(info.data);
+    const font = (window as any).fontkit.create(bytes);
+    const characters = new Set<number>(font.characterSet.filter((code: number) => {
+      const unicode = typeof info.toUnicode.get === 'function'
+        ? info.toUnicode.get(code) : info.toUnicode._map?.[code];
+      return unicode === String.fromCodePoint(code) && (!info.toFontChar || info.toFontChar[code] === code);
+    }));
+    if (!characters.size) return undefined;
+    const name = `EditorSource${sourceFontId++}`;
+    sourceFonts.set(name, { bytes, characters });
+    return name;
+  } catch { return undefined; }
+}
+
+function glyphHeight(canvas: HTMLCanvasElement, x: number, y: number, width: number, height: number, background: string) {
+  const ctx = canvas.getContext('2d');
+  const left = Math.max(0, Math.floor(x)), top = Math.max(0, Math.floor(y));
+  const w = Math.min(canvas.width - left, Math.ceil(width)), h = Math.min(canvas.height - top, Math.ceil(height));
+  if (!ctx || w <= 0 || h <= 0) return undefined;
+  const bg = [1, 3, 5].map(i => parseInt(background.slice(i, i + 2), 16));
+  const pixels = ctx.getImageData(left, top, w, h).data;
+  let first = h, last = -1;
+  for (let row = 0; row < h; row++) {
+    let ink = 0;
+    for (let col = 0; col < w; col++) {
+      const i = (row * w + col) * 4;
+      if (bg.reduce((sum, value, k) => sum + (pixels[i + k] - value) ** 2, 0) > 6000) ink++;
+    }
+    if (ink >= Math.max(1, w * 0.005)) { first = Math.min(first, row); last = row; }
+  }
+  return last >= first ? last - first + 1 : undefined;
+}
+
 export function sampleColors(canvas: HTMLCanvasElement, x: number, y: number, w: number, h: number) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return { color: '#000000', maskColor: '#ffffff' };
@@ -65,6 +106,7 @@ export function sampleColors(canvas: HTMLCanvasElement, x: number, y: number, w:
 export async function extractNativeText(page: any, viewport: any, canvas: HTMLCanvasElement): Promise<Annotation[]> {
   const content = await page.getTextContent();
   const pdfjs = (window as any).pdfjsLib;
+  const retained = new Map<string, string | undefined>();
   return content.items.filter((item: any) => item.str?.trim()).map((item: any, index: number) => {
     const style = content.styles[item.fontName] || {};
     const tx = pdfjs.Util.transform(viewport.transform, item.transform);
@@ -86,6 +128,8 @@ export async function extractNativeText(page: any, viewport: any, canvas: HTMLCa
     const left = Math.min(...corners.map(point => point[0])), top = Math.min(...corners.map(point => point[1]));
     const boxWidth = Math.max(...corners.map(point => point[0])) - left;
     const boxHeight = Math.max(...corners.map(point => point[1])) - top;
+    const colors = sampleColors(canvas, left, top, boxWidth, boxHeight);
+    if (!retained.has(item.fontName)) retained.set(item.fontName, retainSourceFont(fontInfo));
     return remember({
       id: `native-${index}`, type: 'text', source: 'native', content: item.str,
       x: x / canvas.width * 100, y: y / canvas.height * 100,
@@ -93,13 +137,15 @@ export async function extractNativeText(page: any, viewport: any, canvas: HTMLCa
       fontSize: size, baseline: ascent, rotation: angle * 180 / Math.PI,
       maskPadding: Math.max(1.5, size * 0.1),
       fontFamily: familyFor(name), detectedFont: name,
+      sourceFont: retained.get(item.fontName),
+      sourceGlyphHeight: Math.abs(angle) < 0.01 ? glyphHeight(canvas, left, top, boxWidth, boxHeight, colors.maskColor) : undefined,
       isBold: !!fontInfo?.bold || /bold|black|heavy|demi/i.test(name),
       isItalic: !!fontInfo?.italic || /italic|oblique/i.test(name),
       detectedBounds: {
         x: left / canvas.width * 100, y: top / canvas.height * 100,
         width: boxWidth / canvas.width * 100, height: boxHeight / canvas.height * 100,
       },
-      isInteractive: true, ...sampleColors(canvas, left, top, boxWidth, boxHeight),
+      isInteractive: true, ...colors,
     });
   });
 }
@@ -109,6 +155,7 @@ export function ocrAnnotations(data: any, canvas: HTMLCanvasElement): Annotation
   return words.filter((word: any) => word.text?.trim() && word.bbox).map((word: any, index: number) => {
     const { x0, y0, x1, y1 } = word.bbox;
     const height = Math.max(1, y1 - y0);
+    // Keep OCR's nominal size hint; replacement metrics are calibrated to its pixel bbox.
     const size = Number(word.font_size) > 0 ? Number(word.font_size) : height / 0.75;
     const name = word.font_name || '';
     return remember({
@@ -116,6 +163,7 @@ export function ocrAnnotations(data: any, canvas: HTMLCanvasElement): Annotation
       x: x0 / canvas.width * 100, y: y0 / canvas.height * 100,
       width: (x1 - x0) / canvas.width * 100, height: height / canvas.height * 100,
       fontSize: size, baseline: height, rotation: 0, fontFamily: familyFor(name),
+      sourceGlyphHeight: height,
       detectedFont: name || 'Tahmini', confidence: word.confidence,
       isBold: !!word.is_bold, isItalic: !!word.is_italic, isInteractive: true,
       ...sampleColors(canvas, x0, y0, x1 - x0, height),
@@ -132,24 +180,57 @@ export function overlapsOriginal(a: Annotation, b: Annotation) {
 
 const fontBytes = new Map<string, Promise<ArrayBuffer>>();
 const browserFonts = new Map<string, Promise<void>>();
-export const editingFontName = (ann: Annotation) =>
-  `Editor${ann.fontFamily === 'Courier' ? 'Mono' : ann.fontFamily === 'Times New Roman' ? 'Serif' : 'Sans'}${ann.isBold ? 'Bold' : ''}${ann.isItalic ? 'Italic' : ''}`;
+export const editingFontName = (ann: Annotation) => {
+  const source = ann.sourceFont && sourceFonts.get(ann.sourceFont);
+  if (source && [...(ann.content || '')].every(char => /[\r\n]/.test(char) || source.characters.has(char.codePointAt(0)!))) return ann.sourceFont!;
+  return `Editor${ann.fontFamily === 'Courier' ? 'Mono' : ann.fontFamily === 'Times New Roman' ? 'Serif' : 'Sans'}${ann.isBold ? 'Bold' : ''}${ann.isItalic ? 'Italic' : ''}`;
+};
+
+export const textFontStyle = (ann: Annotation) =>
+  !editingFontName(ann).startsWith('EditorSource') && ann.fontFamily === 'Courier' && ann.isItalic ? 'italic' : 'normal';
 
 let measuringCanvas: HTMLCanvasElement | undefined;
-export function textareaBaselineOffset(ann: Annotation) {
+export function textLayout(ann: Annotation, page: Pick<PdfPage, 'previewWidth' | 'previewHeight'>) {
   measuringCanvas ||= document.createElement('canvas');
   const context = measuringCanvas.getContext('2d');
-  const size = ann.fontSize || 24;
-  if (!context) return 0;
-  context.font = `${ann.fontFamily === 'Courier' && ann.isItalic ? 'italic ' : ''}${size}px "${editingFontName(ann)}"`;
-  const metrics = context.measureText('Mg');
-  const ascent = metrics.fontBoundingBoxAscent ?? size * 0.8;
-  const descent = metrics.fontBoundingBoxDescent ?? size * 0.2;
+  const nominalSize = ann.fontSize || 24;
+  let size = nominalSize, scaleX = ann.textStyle?.width ?? 1;
+  const reference = ann.original && ann.useSourceMetrics !== false ? { ...ann, content: ann.original.content } : ann;
+  const measure = (text: string, source = false) => {
+    if (!context) return undefined;
+    const font = source ? reference : ann;
+    context.font = `${textFontStyle(font)} ${size}px "${editingFontName(font)}"`;
+    return context.measureText(text);
+  };
+  if (ann.textStyle) size *= ann.textStyle.height;
+  else if (ann.original && ann.useSourceMetrics !== false) {
+    const metrics = measure(ann.original.content, true);
+    const inkHeight = metrics && metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+    if (inkHeight && ann.sourceGlyphHeight) size *= ann.sourceGlyphHeight / inkHeight;
+    const width = measure(ann.original.content, true)?.width;
+    if (width) scaleX = ann.original.width / 100 * (page.previewWidth || 1) / width;
+  }
+  const metrics = measure('Mg');
+  const ascent = metrics?.fontBoundingBoxAscent ?? size * 0.8;
+  const descent = metrics?.fontBoundingBoxDescent ?? size * 0.2;
+  const sourceMetrics = measure(ann.original?.content || ann.content || 'Mg', true);
+  const baseline = ann.source === 'ocr' && ann.useSourceMetrics !== false && ann.original
+    ? sourceMetrics?.actualBoundingBoxAscent ?? size * 0.8
+    : ann.baseline ?? size * 0.8;
+  const lines = (ann.content || '').replace(/\r/g, '').split('\n');
+  const width = Math.max(1, ...lines.map(line => measure(line)?.width || 0)) * scaleX;
   const browserBaseline = (size * 1.2 - ascent - descent) / 2 + ascent;
-  return (ann.baseline ?? size * 0.8) - browserBaseline;
+  return {
+    size, scaleX, baseline, baselineOffset: baseline - browserBaseline,
+    width: Math.max(ann.width / 100 * (page.previewWidth || 1), width + size),
+    height: Math.max(ann.height / 100 * (page.previewHeight || 1), baseline + (lines.length - 1) * size * 1.2 + descent + size * 0.6),
+    calibration: { width: scaleX, height: size / nominalSize },
+  };
 }
 
 function loadFontBytes(ann: Annotation) {
+  const source = sourceFonts.get(editingFontName(ann));
+  if (source) return Promise.resolve(source.bytes.slice().buffer);
   const family = ann.fontFamily === 'Courier' ? 'NotoSansMono' : ann.fontFamily === 'Times New Roman' ? 'NotoSerif' : 'NotoSans';
   // Noto Mono has no italic file; both the preview and PDF synthesize its slant.
   const variant = `${ann.isBold ? 'Bold' : ''}${ann.isItalic && family !== 'NotoSansMono' ? 'Italic' : ''}` || 'Regular';
@@ -170,7 +251,9 @@ export function prepareBrowserFont(ann: Annotation) {
     const face = new FontFace(name, await loadFontBytes(ann));
     document.fonts.add(await face.load());
   })().catch(error => { browserFonts.delete(name); throw error; }));
-  return browserFonts.get(name)!;
+  const reference = ann.original && ann.useSourceMetrics !== false ? { ...ann, content: ann.original.content } : ann;
+  return editingFontName(reference) === name ? browserFonts.get(name)! :
+    Promise.all([browserFonts.get(name)!, prepareBrowserFont(reference)]).then(() => {});
 }
 
 export async function drawPageEdits(doc: any, page: any, model: PdfPage, fonts: Map<string, any>) {
@@ -217,6 +300,8 @@ export async function drawPageEdits(doc: any, page: any, model: PdfPage, fonts: 
     const changed = textChanged(ann);
     if (ann.source === 'native' && !changed) continue;
     const key = editingFontName(ann);
+    await prepareBrowserFont(ann);
+    const layout = textLayout(ann, model);
     if (!fonts.has(key)) {
       if (!(window as any).fontkit) throw new Error('Unicode yazı tipi desteği yüklenemedi. Sayfayı yenileyin.');
       fonts.set(key, await doc.embedFont(await loadFontBytes(ann), { subset: true }));
@@ -226,19 +311,24 @@ export async function drawPageEdits(doc: any, page: any, model: PdfPage, fonts: 
     if ([...ann.content].some(char => char !== '\n' && char !== '\r' && !supported.has(char.codePointAt(0)))) {
       throw new Error('Seçilen yazı tipi metindeki bazı karakterleri desteklemiyor. Başka bir yazı tipi seçin.');
     }
-    const size = (ann.fontSize || 24) * sy;
-    const baseline = (ann.baseline ?? (ann.fontSize || 24) * 0.8) * sy;
+    const size = layout.size * sy;
+    const baseline = layout.baseline * sy;
     const angle = (ann.rotation || 0) * Math.PI / 180;
     if (ann.textBackgroundColor && ann.textBackgroundColor !== 'transparent') rect(ann, ann.textBackgroundColor);
     const lines = ann.content.replace(/\r/g, '').split('\n');
     lines.forEach((line, i) => {
       const offset = baseline + i * size * 1.2;
+      const cos = Math.cos(angle), sin = Math.sin(angle);
+      page.pushOperators(pushGraphicsState(), concatTransformationMatrix(
+        cos * layout.scaleX * sx / sy, -sin * layout.scaleX * sx / sy, sin, cos,
+        x - sin * offset, y - cos * offset,
+      ));
       page.drawText(line, {
-        x: x - Math.sin(angle) * offset, y: y - Math.cos(angle) * offset,
-        size, font, color: color(ann.color), rotate: degrees(-(ann.rotation || 0)),
-        xSkew: degrees(ann.fontFamily === 'Courier' && ann.isItalic ? 12 : 0),
+        x: 0, y: 0, size, font, color: color(ann.color),
+        xSkew: degrees(textFontStyle(ann) === 'italic' ? 12 : 0),
         opacity: ann.source === 'ocr' && !changed ? 0 : ann.opacity ?? 1,
       });
+      page.pushOperators(popGraphicsState());
     });
   }
   page.pushOperators(popGraphicsState());

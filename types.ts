@@ -39,7 +39,7 @@ export interface Annotation {
   // Text specific
   content?: string; 
   originalContent?: string;
-  fontSize?: number;
+  fontSize?: number; // Natural preview pixels; convert using page display/preview height for pt
   fontFamily?: 'Helvetica' | 'Times New Roman' | 'Courier';
   isBold?: boolean;
   isItalic?: boolean;
@@ -48,6 +48,10 @@ export interface Annotation {
   source?: 'native' | 'ocr';
   confidence?: number;
   detectedFont?: string;
+  sourceFont?: string;
+  sourceGlyphHeight?: number;
+  textStyle?: { width: number; height: number }; // Fixed source calibration, inherited by new text
+  useSourceMetrics?: boolean;
   detectedBounds?: { x: number; y: number; width: number; height: number };
   original?: {
     x: number; y: number; width: number; height: number;

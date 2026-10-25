@@ -4,19 +4,39 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "dev": "node scripts/copy-ocr-assets.mjs && vite",
+    "build": "node scripts/copy-ocr-assets.mjs && vite build",
+    "preview": "vite preview",
+    "assets:ocr": "node scripts/copy-ocr-assets.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/model.test.mjs",
+    "test:fixtures": "node scripts/make-test-fixtures.mjs"
   },
   "dependencies": {
+    "@fontsource/inter": "5.2.8",
+    "@fontsource/noto-sans": "5.2.8",
+    "@fontsource/noto-serif": "5.2.8",
+    "@fontsource/roboto-mono": "5.2.8",
+    "@google/genai": "^1.30.0",
+    "@tesseract.js-data/eng": "1.0.0",
+    "@tesseract.js-data/tur": "1.0.0",
+    "diff": "5.2.0",
+    "jspdf": "2.5.1",
+    "jszip": "3.10.1",
+    "lucide-react": "^0.554.0",
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "4.10.38",
+    "qrious": "4.0.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "lucide-react": "^0.554.0",
-    "@google/genai": "^1.30.0"
+    "tesseract.js": "7.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "10.4.22",
+    "postcss": "8.5.6",
+    "tailwindcss": "3.4.19",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }

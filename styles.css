@@ -1,0 +1,16 @@
+@import '@fontsource/inter/latin-400.css';
+@import '@fontsource/inter/latin-ext-400.css';
+@import '@fontsource/inter/latin-500.css';
+@import '@fontsource/inter/latin-600.css';
+@import '@fontsource/inter/latin-700.css';
+@import '@fontsource/inter/latin-ext-700.css';
+@import '@fontsource/inter/latin-800.css';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+body { font-family: Inter, system-ui, sans-serif; }
+.bg-grid-pattern { background-color:#f8fafc; background-image:radial-gradient(#cbd5e1 1px,transparent 1px); background-size:24px 24px; }
+::-webkit-scrollbar { width:8px; height:8px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:4px; }
+::-webkit-scrollbar-thumb:hover { background:#94a3b8; }

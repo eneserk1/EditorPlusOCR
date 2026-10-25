@@ -1,0 +1,32 @@
+import { PDFDocument, StandardFonts, rgb, degrees } from 'pdf-lib';
+import { createRequire } from 'node:module';
+import { mkdir, writeFile } from 'node:fs/promises';
+const require = createRequire(import.meta.url);
+const canvasRequire = createRequire(require.resolve('pdfjs-dist/package.json'));
+const { createCanvas } = canvasRequire('@napi-rs/canvas');
+await mkdir('tests/fixtures', { recursive: true });
+const doc = await PDFDocument.create();
+const font = await doc.embedFont(StandardFonts.Helvetica);
+const serif = await doc.embedFont(StandardFonts.TimesRomanBold);
+for (const rotation of [0, 90, 180, 270]) {
+  const page = doc.addPage([420, 300]);
+  page.drawRectangle({ x: 0, y: 0, width: 420, height: 300, color: rgb(0.96, 0.94, 0.86) });
+  page.drawText('Belge Editor Test', { x: 30, y: 240, size: 22, font: serif, color: rgb(0.15, 0.3, 0.6) });
+  page.drawText('Kahvalti 125,00 TL', { x: 30, y: 190, size: 16, font });
+  page.drawLine({ start: {x: 30, y: 175}, end: {x: 380, y: 175}, thickness: 0.7, color: rgb(0, 0, 0) });
+  page.drawText('Degismeyen metin', { x: 30, y: 100, size: 15, font });
+  page.setRotation(degrees(rotation));
+}
+const crop = doc.addPage([460, 340]); crop.setCropBox(20, 20, 420, 300);
+crop.drawText('CropBox test', { x: 50, y: 250, size: 20, font });
+await writeFile('tests/fixtures/native.pdf', await doc.save());
+const scanCanvas = createCanvas(1260, 900), ctx = scanCanvas.getContext('2d');
+ctx.fillStyle = '#f5f0d8'; ctx.fillRect(0, 0, 1260, 900);
+ctx.fillStyle = '#214da0'; ctx.font = 'bold 66px Arial'; ctx.fillText('KAHVALTI MENÜSÜ', 90, 160);
+ctx.fillStyle = '#252525'; ctx.font = '48px Arial'; ctx.fillText('Kahvaltı 125,00 TL', 90, 300);
+ctx.fillText('Çay ve kahve', 90, 420); ctx.fillText('İstanbul Şişli', 90, 540);
+const scan = await PDFDocument.create();
+const image = await scan.embedPng(scanCanvas.toBuffer('image/png'));
+scan.addPage([420, 300]).drawImage(image, { x: 0, y: 0, width: 420, height: 300 });
+await writeFile('tests/fixtures/scan.pdf', await scan.save());
+console.log('Native, rotated, cropped and Turkish scanned PDF fixtures ready.');

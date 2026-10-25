@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Generated from pinned OCR dependencies by dev/build
+public/ocr/
+.test-output/
+
+tests/fixtures/

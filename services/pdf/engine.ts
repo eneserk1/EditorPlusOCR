@@ -72,6 +72,7 @@ export class LocalPdfEngine {
       const pdfFont = pdfPage.commonObjs.has(item.fontName) ? pdfPage.commonObjs.get(item.fontName) : undefined;
       const fontName: string = pdfFont?.name || styleInfo?.fontFamily || '';
       const bold = typeof pdfFont?.bold === 'boolean' ? pdfFont.bold : fontName ? /bold|black|heavy/i.test(fontName) : undefined;
+      const weight = /thin|extralight|light/i.test(fontName) ? 300 : /semibold|demibold/i.test(fontName) ? 600 : /medium/i.test(fontName) ? 500 : bold ? 700 : 400;
       const italic = typeof pdfFont?.italic === 'boolean' ? pdfFont.italic : fontName ? /italic|oblique/i.test(fontName) : undefined;
       const loaded = pdfFont?.loadedName && [...document.fonts].some(font => font.family.replaceAll('\"', '') === pdfFont.loadedName);
       const measureFamily = loaded ? pdfFont.loadedName : /times|serif/i.test(fontName) && !/sans/i.test(fontName) ? 'Noto Serif' : /mono|courier/i.test(fontName) ? 'Roboto Mono' : 'Noto Sans';
@@ -86,10 +87,12 @@ export class LocalPdfEngine {
         if (rect.width < 0.5 || rect.height < 0.5) continue;
         const appearance = sampleAppearance(render.canvas, rect, render.scale);
         const style = matchAppearance(render.canvas, rect, match[0], render.scale,
-          { family: fontName, size, baseline: transform[5] - rect.y, bold, italic });
+          { family: fontName, size, baseline: transform[5] - rect.y, bold: weight >= 600, italic, weight });
         // Keep native spacing, but never exceed the PDF's original word extent.
         const region: TextRegion = { ...rect, id: id(), text: match[0], style, source: 'native', confidence: 100, ...appearance };
-        regions.push(withOriginal(region));
+        const original = withOriginal(region);
+        original.original!.maskRect = clampRect({ x: rect.x - 0.5, y: rect.y - 0.5, width: rect.width + 1, height: rect.height + 1 }, page);
+        regions.push(original);
       }
     }
     return regions;

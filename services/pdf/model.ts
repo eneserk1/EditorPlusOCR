@@ -1,10 +1,27 @@
-export type FontFamily = 'Noto Sans' | 'Noto Serif' | 'Roboto Mono';
+export const fontCatalog = [
+  { family: 'Noto Sans', weights: [300, 400, 500, 600, 700] },
+  { family: 'Noto Serif', weights: [300, 400, 500, 600, 700] },
+  { family: 'Roboto Mono', weights: [300, 400, 500, 600, 700] },
+  { family: 'Arimo', weights: [400, 500, 600, 700] },
+  { family: 'Tinos', weights: [400, 700] },
+  { family: 'Cousine', weights: [400, 700] },
+  { family: 'Roboto', weights: [300, 400, 500, 600, 700] },
+  { family: 'Open Sans', weights: [300, 400, 500, 600, 700] },
+  { family: 'Lato', weights: [300, 400, 700] },
+  { family: 'Montserrat', weights: [300, 400, 500, 600, 700] },
+  { family: 'Inter', weights: [300, 400, 500, 600, 700] }
+] as const;
+export type FontFamily = typeof fontCatalog[number]['family'];
+export const fontFamilies: FontFamily[] = fontCatalog.map(font => font.family);
+export function fontWeights(family: FontFamily): readonly number[] { return fontCatalog.find(font => font.family === family)?.weights || [400, 700]; }
+export function effectiveWeight(style: Pick<TextStyle, 'bold' | 'fontWeight'>) { return style.fontWeight ?? (style.bold ? 700 : 400); }
 export type Tool = 'select' | 'hand' | 'text' | 'erase' | 'highlight' | 'line';
 export interface Rect { x: number; y: number; width: number; height: number }
 export interface TextStyle {
   fontFamily: FontFamily;
   fontSize: number; // PDF points in the page's original displayed orientation
   bold: boolean;
+  fontWeight?: number;
   italic: boolean;
   color: string;
   letterSpacing: number;
@@ -19,7 +36,7 @@ export interface TextRegion extends Rect {
   confidence: number;
   background: string;
   complexBackground: boolean;
-  original?: { rect: Rect; text: string; style: TextStyle };
+  original?: { rect: Rect; maskRect?: Rect; text: string; style: TextStyle };
   deleted?: boolean;
 }
 export interface Mark extends Rect {
@@ -42,7 +59,6 @@ export interface EditorPage {
   marks: Mark[];
   analysis: 'pending' | 'native' | 'ocr' | 'mixed';
 }
-export const fontFamilies: FontFamily[] = ['Noto Sans', 'Noto Serif', 'Roboto Mono'];
 export const id = () => crypto.randomUUID();
 export function isChanged(region: TextRegion): boolean {
   const original = region.original;

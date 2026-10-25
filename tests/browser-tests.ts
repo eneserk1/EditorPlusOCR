@@ -1,6 +1,6 @@
 import { LocalPdfEngine } from '../services/pdf/engine';
-import { canvas, loadFonts, makePatches, textOverflow, textWidth, fitTextRegion } from '../services/pdf/appearance';
-import { TextRegion, id, isChanged, restoreRegion, unrotatePoint } from '../services/pdf/model';
+import { canvas, loadFonts, makePatches, textOverflow, textWidth, fitTextRegion, sampleAppearance, matchAppearance, cssFont, textLayout } from '../services/pdf/appearance';
+import { TextRegion, id, isChanged, restoreRegion, unrotatePoint, fontFamilies, effectiveWeight } from '../services/pdf/model';
 const log = (message: string) => { document.querySelector('#results')!.textContent += message + '\n'; };
 function assert(value: unknown, message: string): asserts value { if (!value) throw new Error(message); log('✓ ' + message); }
 async function fixture(name: string) { return new File([await (await fetch(`/tests/fixtures/${name}.pdf`)).arrayBuffer()], `${name}.pdf`, { type: 'application/pdf' }); }
@@ -26,7 +26,7 @@ document.querySelector<HTMLButtonElement>('#run')!.onclick = async () => {
     const bytes = await engine.export(pages), original = new Uint8Array(await file.arrayBuffer());
     assert(bytes.length === original.length && bytes.every((byte, index) => byte === original[index]), 'Düzenlenmeyen PDF baytları aynen korunuyor');
     const first = regions.find(region => region.text === '125,00')!;
-    assert(first.style.fontFamily === 'Noto Sans' && !first.style.bold, 'Düz PDF yazısı benzer sans ve normal kalınlıkla eşleştiriliyor');
+    assert(first.style.fontFamily === 'Arimo' && !first.style.bold, `Düz PDF yazısı benzer sans ve normal kalınlıkla eşleştiriliyor (${first.style.fontFamily}, ${effectiveWeight(first.style)})`);
     const styleEdit = { ...first, style: { ...first.style, color: '#e11d48' } };
     assert(isChanged(styleEdit), 'Yalnızca renk/font değişikliği de kaydediliyor');
     assert(!isChanged(restoreRegion(styleEdit)), 'Orijinale dön tüm metin özelliklerini geri alıyor');
@@ -35,6 +35,36 @@ document.querySelector<HTMLButtonElement>('#run')!.onclick = async () => {
     const enlarged = { ...turkish, ...fitTextRegion(turkish, pages[0]) };
     assert(Math.abs((enlarged.y + enlarged.style.baseline) - (first.y + first.style.baseline)) < 0.01, 'Alan genişlerken orijinal satır tabanı yerinde kalıyor');
     assert(!textOverflow(enlarged) && textWidth(enlarged.text, enlarged.style) > 0, 'Türkçe karakterler ölçülüyor ve çizilebiliyor');
+    const long = { ...first, text: 'Daha uzun bir açıklama ve Türkçe metin' };
+    const automatic = { ...long, ...fitTextRegion(long, pages[0]) };
+    assert(automatic.width > first.width && !textOverflow(automatic), 'Uzun metnin alanı kullanıcı düğmesine gerek kalmadan genişliyor');
+    const edge = { ...first, x: pages[0].width - 60, text: 'Sayfanın kenarında uzun metin otomatik olarak alt satıra geçer' };
+    const wrapped = { ...edge, ...fitTextRegion(edge, pages[0]) };
+    assert(textLayout(wrapped).lines.length > 1 && !textOverflow(wrapped), 'Sayfa kenarında metin sarılıyor ve alanın yüksekliği büyüyor');
+    assert(fontFamilies.length === 11, 'On bir font ailesi düzenleme ve algılamada kullanılabiliyor');
+    for (const [foreground, background] of [['#b92c48', '#f5f0d8'], ['#e4e4e4', '#ffffff'], ['#ffffff', '#14243a'], ['#16865a', '#ffffff']]) {
+      const sample = canvas(900, 240), ctx = sample.getContext('2d')!;
+      ctx.scale(3, 3); ctx.fillStyle = background; ctx.fillRect(0, 0, 300, 80);
+      const style = { ...first.style, fontFamily: 'Inter' as const, fontSize: 22, fontWeight: 400, bold: false, italic: false, letterSpacing: 0 };
+      ctx.font = cssFont(style); ctx.fillStyle = foreground; ctx.fillText('İstanbul 125,00', 20, 50);
+      const metrics = ctx.measureText('İstanbul 125,00');
+      const rect = { x: 20 - metrics.actualBoundingBoxLeft, y: 50 - metrics.actualBoundingBoxAscent, width: metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight, height: metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent };
+      const color = sampleAppearance(sample, rect, 3).color;
+      const difference = Math.hypot(...[1,3,5].map(i => parseInt(color.slice(i,i+2),16) - parseInt(foreground.slice(i,i+2),16)));
+      assert(difference < 14, `Renk algılama: ${foreground} → ${color} (açık gri ve ters zemin dahil)`);
+    }
+    for (const family of ['Inter', 'Tinos', 'Montserrat'] as const) {
+      const sample = canvas(1000, 240), ctx = sample.getContext('2d')!;
+      ctx.scale(3, 3); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 334, 80);
+      const weight = family === 'Tinos' ? 400 : 300;
+      ctx.font = cssFont({ ...first.style, fontFamily: family, fontSize: 23, fontWeight: weight, bold: false, italic: false, letterSpacing: 0 });
+      ctx.fillStyle = '#686868'; ctx.fillText('İstanbul 125,00', 20, 50);
+      const m = ctx.measureText('İstanbul 125,00');
+      const rect = { x: 20 - m.actualBoundingBoxLeft, y: 50 - m.actualBoundingBoxAscent, width: m.actualBoundingBoxLeft + m.actualBoundingBoxRight, height: m.actualBoundingBoxAscent + m.actualBoundingBoxDescent };
+      const detected = matchAppearance(sample, rect, 'İstanbul 125,00', 3);
+      assert(detected.fontFamily === family, `Font algılama: ${family} → ${detected.fontFamily}`);
+      assert(effectiveWeight(detected) <= 400 && !detected.bold, `${family}: ince/normal yazı gereksiz kalınlaşmıyor (${effectiveWeight(detected)})`);
+    }
     const render = await engine.render(pages[0]);
     assert(makePatches(render.canvas, regions.filter(isChanged), render.scale).length === 0, 'Seçim/analiz için maske veya yeni yazı üretilmiyor');
     pages[0].regions = regions.map(region => region.id === first.id ? { ...region, text: '135,00', style: { ...region.style, color: '#e11d48' } } : region);
@@ -79,7 +109,7 @@ document.querySelector<HTMLButtonElement>('#run')!.onclick = async () => {
     assert(difference(scanBefore.canvas, (await scanCheck.render(checkPages[0])).canvas) === 0, 'OCR sonrası düzenlenmeyen taramanın görüntüsü aynı');
     await scanCheck.dispose();
     const price = ocr.find(region => /125[,.]00/.test(region.text))!;
-    assert(price.style.fontFamily === 'Noto Sans' && !price.style.bold && !price.style.italic, 'Taramadaki düz fiyat yazısı gereksiz kalın veya italik yapılmıyor');
+    assert(effectiveWeight(price.style) <= 500 && !price.style.bold && !price.style.italic, `Taramadaki düz fiyat yazısı gereksiz kalın veya italik yapılmıyor (${price.style.fontFamily}, ${effectiveWeight(price.style)})`);
     scan.regions = ocr.map(region => region.id === price.id ? { ...region, text: '135,00' } : region);
     const changedPatches = await engine.patches(scan, scanBefore);
     assert(changedPatches.length === 2, 'Tarama düzenlemesinde yalnızca eski kelime ve yeni kelime işleniyor');

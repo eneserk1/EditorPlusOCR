@@ -8,18 +8,39 @@ importers:
 
   .:
     dependencies:
+      '@fontsource/arimo':
+        specifier: 5.3.0
+        version: 5.3.0
+      '@fontsource/cousine':
+        specifier: 5.3.0
+        version: 5.3.0
       '@fontsource/inter':
         specifier: 5.2.8
         version: 5.2.8
+      '@fontsource/lato':
+        specifier: 5.3.0
+        version: 5.3.0
+      '@fontsource/montserrat':
+        specifier: 5.3.0
+        version: 5.3.0
       '@fontsource/noto-sans':
         specifier: 5.2.8
         version: 5.2.8
       '@fontsource/noto-serif':
         specifier: 5.2.8
         version: 5.2.8
+      '@fontsource/open-sans':
+        specifier: 5.3.0
+        version: 5.3.0
+      '@fontsource/roboto':
+        specifier: 5.3.0
+        version: 5.3.0
       '@fontsource/roboto-mono':
         specifier: 5.2.8
         version: 5.2.8
+      '@fontsource/tinos':
+        specifier: 5.3.0
+        version: 5.3.0
       '@google/genai':
         specifier: ^1.30.0
         version: 1.52.0
@@ -331,8 +352,20 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@fontsource/arimo@5.3.0':
+    resolution: {integrity: sha512-nhxZ2sTVZYX8DJBgLuyX360B5vE4mxqpmjlKTRfucIqfcWRVx9vOYzWBc1IgEX0ist48VMC10PRKbFyH+4QFvQ==}
+
+  '@fontsource/cousine@5.3.0':
+    resolution: {integrity: sha512-EhVes1KpHrmPwGVCoVxYpdiIi/L2LRGxbAuv07m3TdY76f9Vmwyhd/TNqi2RC0NOvMCNt2FtYPJcAfFfkK9DoQ==}
+
   '@fontsource/inter@5.2.8':
     resolution: {integrity: sha512-P6r5WnJoKiNVV+zvW2xM13gNdFhAEpQ9dQJHt3naLvfg+LkF2ldgSLiF4T41lf1SQCM9QmkqPTn4TH568IRagg==}
+
+  '@fontsource/lato@5.3.0':
+    resolution: {integrity: sha512-0WhF/4rhrw+ErIyneKvhHn2YAl+xf8GDtllgOgOzDmeaSlLQtjpChXaQOpWhG2BchQW0WJy2zLV12Hdg0ndOMw==}
+
+  '@fontsource/montserrat@5.3.0':
+    resolution: {integrity: sha512-iQPDtZOnmM5ih4JBGaMSXisRap0ixb9bAUw2hDtY7EjVfaqiiNlKtVuJl9XclxUwtwMMHNcWXfQR6zI9x05+Tg==}
 
   '@fontsource/noto-sans@5.2.8':
     resolution: {integrity: sha512-Gqsp0q7sL4G+KL7PRFy4eteeJad9Q3Ef8qlBVabT406e57vdbDH7fAQeiVn0ILGMQ/UDyj6j/SVK+VYzVzxE9w==}
@@ -340,8 +373,17 @@ packages:
   '@fontsource/noto-serif@5.2.8':
     resolution: {integrity: sha512-q8iGVFYAj/13OicYggr0+2gtL0a4CDl+24JIc+B+71RUSRtGcKz90oz9GMvjcO7jxiDGpZfm98yBmmyF+rmbDQ==}
 
+  '@fontsource/open-sans@5.3.0':
+    resolution: {integrity: sha512-V1bdMlGNyZrJwzrdusshMOw2YR0aqYDL7kOo9dkxUEKl8dFv66A9HLckOOXl572sG/7ohhDQrCrTFGSn9LZcSw==}
+
   '@fontsource/roboto-mono@5.2.8':
     resolution: {integrity: sha512-M0XPRcvkOKiTPooXwX7yJSNpuad3CPcQwsADBfnopz3apBs+VKI47pc42mlvAxJjNTRauu5rndSxHc8F52bR7Q==}
+
+  '@fontsource/roboto@5.3.0':
+    resolution: {integrity: sha512-BapRJOWYP+LZ21zp+wBQjfpPYKRoxc4LspJ/RLuI+HSMBD5u/X4O+ESDrSvEqDSy0rAl7GwBJ+09mdc16cVQ1Q==}
+
+  '@fontsource/tinos@5.3.0':
+    resolution: {integrity: sha512-VVDyyZdbcsLKxo/W7rClAvacD/7DsGc7J5xzzp51Tndib8kDkEe/0bqbb3Xb3iH6+IUjt07aRsvtQ9MGeGGi4w==}
 
   '@google/genai@1.52.0':
     resolution: {integrity: sha512-gwSvbpiN/17O9TbsqSsE/OzZcpv5Fo4RQjdngGgogtuB9RsyJ8ZHhX5KjHj1bp5N9snN2eK8LDGXSaWW2hof8Q==}
@@ -1570,13 +1612,27 @@ snapshots:
   '@esbuild/win32-x64@0.25.12':
     optional: true
 
+  '@fontsource/arimo@5.3.0': {}
+
+  '@fontsource/cousine@5.3.0': {}
+
   '@fontsource/inter@5.2.8': {}
+
+  '@fontsource/lato@5.3.0': {}
+
+  '@fontsource/montserrat@5.3.0': {}
 
   '@fontsource/noto-sans@5.2.8': {}
 
   '@fontsource/noto-serif@5.2.8': {}
 
+  '@fontsource/open-sans@5.3.0': {}
+
   '@fontsource/roboto-mono@5.2.8': {}
+
+  '@fontsource/roboto@5.3.0': {}
+
+  '@fontsource/tinos@5.3.0': {}
 
   '@google/genai@1.52.0':
     dependencies:

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Bold, Download, Highlighter, Hand, Italic, Loader2, Minus, MousePointer2, Plus, RotateCw, ScanText, Trash2, Type, Undo2, ZoomIn, ZoomOut, Eraser, Redo2, ImagePlus, QrCode, Stamp } from 'lucide-react';
 import { LocalPdfEngine } from '../../services/pdf/engine';
-import { EditorPage, TextRegion, Tool, fontFamilies, id, isChanged, restoreRegion, displaySize } from '../../services/pdf/model';
+import { EditorPage, TextRegion, Tool, fontFamilies, id, isChanged, restoreRegion, displaySize, fontWeights, effectiveWeight } from '../../services/pdf/model';
 import { textOverflow, fitTextRegion } from '../../services/pdf/appearance';
 import PageCanvas from './PageCanvas';
 import './editor.css';
@@ -57,7 +57,9 @@ export default function PdfEditor({ initialFiles = EMPTY_FILES, onBack }: { init
   }, [commit]);
   function updateRegion(updates: Partial<TextRegion>) {
     if (!current || !region) return;
-    updatePage(current.id, page => ({ ...page, regions: page.regions.map(item => item.id === region.id ? { ...item, ...updates } : item) }));
+    let next = { ...region, ...updates };
+    if (!updates.original && (updates.text !== undefined || updates.style)) next = { ...next, ...fitTextRegion(next, current) };
+    updatePage(current.id, page => ({ ...page, regions: page.regions.map(item => item.id === region.id ? next : item) }));
   }
   async function addFiles(files: File[]) {
     if (busyRef.current || !files.length) return;
@@ -143,7 +145,7 @@ export default function PdfEditor({ initialFiles = EMPTY_FILES, onBack }: { init
   });
   async function save() {
     if (busyRef.current || !pages.some(page => !page.deleted)) return;
-    if (hasOverflow) { setError('Bazı metinler alanına sığmıyor. İşaretli metnin alanını genişletin veya yazı boyutunu azaltın.'); return; }
+    if (hasOverflow) { setError('Metin sayfanın tamamından daha büyük. Metni kısaltın veya yazı boyutunu azaltın.'); return; }
     busyRef.current = true; setBusy('PDF cihazda kaydediliyor…'); setError('');
     try {
       const bytes = await engine.export(pagesRef.current);
@@ -262,16 +264,19 @@ export default function PdfEditor({ initialFiles = EMPTY_FILES, onBack }: { init
         {region && !region.deleted ? <>
           <p className="pdf-hint">{region.source === 'native' ? 'PDF metni' : region.source === 'ocr' ? `OCR · %${Math.round(region.confidence)} güven` : 'Yeni metin'} · Font yaklaşık eşleştirilir.</p>
           <label>Metin<input ref={editInput} aria-label="Seçili metin" value={region.text} disabled={!!busy} onChange={event => updateRegion({ text: event.target.value })} /></label>
-          <label>Yazı tipi<select value={region.style.fontFamily} disabled={!!busy} onChange={event => updateRegion({ style: { ...region.style, fontFamily: event.target.value as TextRegion['style']['fontFamily'] } })}>{fontFamilies.map(font => <option key={font}>{font}</option>)}</select></label>
+          <label>Yazı tipi<select value={region.style.fontFamily} disabled={!!busy} onChange={event => { const family = event.target.value as TextRegion['style']['fontFamily']; const weight = [...fontWeights(family)].sort((a, b) => Math.abs(a - effectiveWeight(region.style)) - Math.abs(b - effectiveWeight(region.style)))[0]; updateRegion({ style: { ...region.style, fontFamily: family, fontWeight: weight, bold: weight >= 600 } }); }}>{fontFamilies.map(font => <option key={font} style={{ fontFamily: font }}>{font}</option>)}</select></label>
           <div className="pdf-fields"><label>Boyut (pt)<input aria-label="Yazı boyutu" type="number" min="3" max="200" step="0.1" value={Number(region.style.fontSize.toFixed(2))} disabled={!!busy} onChange={event => { const size = Number(event.target.value); if (size >= 3 && size <= 200) updateRegion({ style: { ...region.style, fontSize: size, baseline: region.style.baseline * size / region.style.fontSize } }); }} /></label>
             <label>Renk<input aria-label="Yazı rengi" type="color" value={region.style.color} disabled={!!busy} onChange={event => updateRegion({ style: { ...region.style, color: event.target.value } })} /></label></div>
-          <div className="flex gap-2"><button className={`pdf-button ${region.style.bold ? 'pdf-active' : ''}`} aria-label="Kalın" aria-pressed={region.style.bold} disabled={!!busy} onClick={() => updateRegion({ style: { ...region.style, bold: !region.style.bold } })}><Bold size={16} /></button>
+          <label>Yazı kalınlığı<select aria-label="Yazı kalınlığı" value={effectiveWeight(region.style)} disabled={!!busy} onChange={event => { const weight = Number(event.target.value); updateRegion({ style: { ...region.style, fontWeight: weight, bold: weight >= 600 } }); }}>
+            {fontWeights(region.style.fontFamily).map(weight => <option key={weight} value={weight}>{({300: 'İnce', 400: 'Normal', 500: 'Orta', 600: 'Yarı kalın', 700: 'Kalın'})[weight]}</option>)}
+          </select></label>
+          <div className="flex gap-2"><button className={`pdf-button ${region.style.bold ? 'pdf-active' : ''}`} aria-label="Kalın" aria-pressed={region.style.bold} disabled={!!busy} onClick={() => updateRegion({ style: { ...region.style, bold: !region.style.bold, fontWeight: region.style.bold ? 400 : 700 } })}><Bold size={16} /></button>
             <button className={`pdf-button ${region.style.italic ? 'pdf-active' : ''}`} aria-label="İtalik" aria-pressed={region.style.italic} disabled={!!busy} onClick={() => updateRegion({ style: { ...region.style, italic: !region.style.italic } })}><Italic size={16} /></button></div>
           <div className="pdf-fields"><label>Alan eni (pt)<input aria-label="Metin alanı eni" type="number" min="1" max={current.width - region.x} value={Number(region.width.toFixed(2))} disabled={!!busy} onChange={event => { const width = Number(event.target.value); if (width > 0 && width <= current.width - region.x) updateRegion({ width }); }} /></label>
             <label>Alan boyu (pt)<input aria-label="Metin alanı boyu" type="number" min="1" max={current.height - region.y} value={Number(region.height.toFixed(2))} disabled={!!busy} onChange={event => { const height = Number(event.target.value); if (height > 0 && height <= current.height - region.y) updateRegion({ height }); }} /></label></div>
           <label>Harf aralığı (pt)<input aria-label="Harf aralığı" type="number" step="0.05" min="-5" max="30" value={Number(region.style.letterSpacing.toFixed(2))} disabled={!!busy} onChange={event => { const spacing = Number(event.target.value); if (spacing >= -5 && spacing <= 30) updateRegion({ style: { ...region.style, letterSpacing: spacing } }); }} /></label>
           <label>Satır tabanı (pt)<input aria-label="Satır tabanı" type="number" step="0.1" min="0" max={region.height} value={Number(region.style.baseline.toFixed(2))} disabled={!!busy} onChange={event => { const baseline = Number(event.target.value); if (baseline >= 0 && baseline <= region.height) updateRegion({ style: { ...region.style, baseline } }); }} /></label>
-          {isChanged(region) && textOverflow(region) && <div className="pdf-warning" role="alert">Metin alana sığmıyor. Alanı genişlet veya yazıyı küçült.<button className="underline block mt-2" disabled={!!busy} onClick={() => updateRegion(fitTextRegion(region, current))}>Alanı metne göre genişlet</button></div>}
+
           {region.complexBackground && <p className="pdf-warning">Bu bölgede zemin karmaşık. Düzenlenen alanın görünümünü kontrol et; gerekirse geri al.</p>}
           {region.source === 'ocr' && region.confidence < 75 && <p className="pdf-warning">OCR bu kelimeden emin değil. Orijinal metni kontrol et.</p>}
           <div className="flex flex-wrap gap-2 mt-5"><button className="pdf-button" disabled={!!busy || !region.original || !isChanged(region)} onClick={() => updateRegion(restoreRegion(region))}><Undo2 size={15} /> Orijinale dön</button>
